@@ -28,7 +28,7 @@
 - [x] Multi-provider quota-aware router
 
 ## V3 — Persistence and production controls (in progress)
-- [x] SQLAlchemy-backed task persistence for PostgreSQL and SQLite via DATABASE_URL
+- [x] SQLAlchemy-backed Supabase Postgres persistence with SSL, pooler support, private schema, and row-level security
 - [x] Restore task history, shared memory, messages, research sources, events, and deliverables after API restart
 - [x] Mark interrupted in-process jobs as failed with an explicit recovery event
 - [ ] Durable Redis worker/job queue and event fanout (next V3 slice)
