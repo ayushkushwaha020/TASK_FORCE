@@ -1,11 +1,7 @@
 # Acceptance Checklist
 
 This checklist tracks the requirements in the Autonomous AI Workforce master specification.
-Statuses are evidence-based:
-- [x] Implemented and covered by automated tests or current deployment evidence.
-- [~] Implemented in code or present in the preview, but not verified end-to-end in the live environment.
-- [ ] Not implemented yet.
-- [BLOCKED] Waiting on an external approval, credential, account resource, or decision.
+Status key (not checklist items): VERIFIED = implemented and covered by automated tests or current deployment evidence; PARTIAL = implemented in code or present in the preview, but not verified end-to-end in the live environment; NOT STARTED = not implemented yet; BLOCKED = waiting on an external approval, credential, account resource, or decision.
 
 ## V1 — Foundation and planning
 
