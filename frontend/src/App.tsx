@@ -15,6 +15,7 @@ type EventItem = { id: string; timestamp: string; actor: string; kind: string; m
 type MemoryItem = { id: string; timestamp: string; source_agent: string; title: string; content: string };
 type AgentMessage = { id: string; timestamp: string; from_agent: string; to_agent: string; kind: string; content: string };
 type QaFeedback = { decision?: string; summary?: string; issues?: string[]; revision_instructions?: string; affected_agents?: string[] };
+type ProviderInfo = { name: string; model: string; max_requests_per_hour: number | null; requests_this_hour: number; cooling_down: boolean };
 type TaskPlan = {
   task_id: string; instruction: string; title: string; category: string;
   execution_mode: "demo" | "provider_planned"; notice: string;
@@ -71,6 +72,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [providerConfigured, setProviderConfigured] = useState<boolean | null>(null);
   const [fallbackConfigured, setFallbackConfigured] = useState(false);
+  const [providerDetails, setProviderDetails] = useState<ProviderInfo[]>([]);
+  const [configurationError, setConfigurationError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(API_BASE + "/api/config/status")
@@ -78,6 +81,8 @@ export default function App() {
       .then((data) => {
         setProviderConfigured(Boolean(data.provider_configured));
         setFallbackConfigured(Boolean(data.fallback_configured));
+        setProviderDetails(Array.isArray(data.providers) ? data.providers as ProviderInfo[] : []);
+        setConfigurationError(data.configuration_error ? String(data.configuration_error) : null);
       })
       .catch(() => setProviderConfigured(null));
   }, []);
@@ -262,7 +267,7 @@ export default function App() {
         )}
 
         {view === "settings" && (
-          <div className="settings-view"><div className="eyebrow"><Settings2 size={14} /> CONFIGURATION</div><h1>Provider <span>settings</span></h1><p className="settings-intro">Provider credentials stay on the backend. This public browser interface never receives or stores API keys.</p><div className="settings-card"><div className="settings-card-head"><div className="provider-icon"><Zap size={20} /></div><div><b>OpenAI-compatible provider</b><small>Server-side model adapter · bounded retries</small></div><span className={providerConfigured ? "connected-tag" : "pending-tag"}>{providerConfigured ? "Configured" : "Not configured"}</span></div><div className="settings-detail"><div><span>Primary provider</span><b>{providerConfigured === null ? "Backend not reachable" : providerConfigured ? "API key detected on server" : "Demo planning mode"}</b></div><div><span>Fallback model</span><b>{fallbackConfigured ? "Configured" : "Not configured"}</b></div><div><span>Credential storage</span><b>Backend environment only</b></div></div><div className="settings-help">Set AI_API_KEY and AI_MODEL in your Render backend service environment. Optionally set AI_FALLBACK_MODEL for recovery. Add AI_API_BASE_URL for an OpenAI-compatible endpoint. Save the environment variables in Render and wait for the service to redeploy. Then refresh this page and create a new mission. Never paste API keys into chat or commit them to GitHub.</div></div><div className="settings-card settings-security"><div className="settings-card-head"><div className="provider-icon"><ShieldCheck size={20} /></div><div><b>Execution and privacy boundaries</b><small>V2 preview guardrails</small></div></div><ul><li>Human approval is required before specialist execution.</li><li>API keys are read only by the backend.</li><li>Only up to eight specialists run in parallel in this preview.</li><li>QA can reject the draft and request one bounded revision pass.</li><li>Tasks are held in process memory and may be lost after a backend restart.</li><li>Agents do not yet have website, filesystem, or terminal tools.</li></ul></div></div>
+          <div className="settings-view"><div className="eyebrow"><Settings2 size={14} /> CONFIGURATION</div><h1>Provider <span>settings</span></h1><p className="settings-intro">Provider credentials stay on the backend. This public browser interface never receives or stores API keys.</p><div className="settings-card"><div className="settings-card-head"><div className="provider-icon"><Zap size={20} /></div><div><b>Multi-provider router</b><small>Priority routing · local request budgets · bounded failover</small></div><span className={providerConfigured ? "connected-tag" : "pending-tag"}>{providerConfigured ? "Configured" : "Not configured"}</span></div><div className="settings-detail"><div><span>Configured endpoints</span><b>{providerConfigured === null ? "Backend not reachable" : providerDetails.length ? String(providerDetails.length) + " provider(s)" : "Demo planning mode"}</b></div><div><span>Fallback model</span><b>{fallbackConfigured ? "Configured" : "Not configured"}</b></div><div><span>Credential storage</span><b>Backend environment only</b></div></div>{configurationError && <div className="error-banner">Provider configuration issue: {configurationError}</div>}<div className="settings-help">Configure several OpenAI-compatible endpoints using AI_PROVIDERS_JSON in your Render backend environment. Each entry needs name, base_url, api_key, and model; optional fields include priority, max_requests_per_hour, and fallback_model. The legacy AI_API_KEY, AI_API_BASE_URL, and AI_MODEL variables are also supported. Save the variables in Render, wait for redeployment, then refresh and create a fresh mission. Never paste API keys into chat or commit them to GitHub.</div>{providerDetails.length > 0 && <div className="provider-list">{providerDetails.map((provider) => <div className="provider-row" key={provider.name}><div><b>{provider.name}</b><small>{provider.model}</small></div><span>{provider.max_requests_per_hour ? provider.requests_this_hour + " / " + provider.max_requests_per_hour + " calls this hour" : "Provider-managed quota"}</span><i className={provider.cooling_down ? "cooldown-indicator" : "ready-indicator"} /></div>)}</div>.</div><div className="settings-card settings-security"><div className="settings-card-head"><div className="provider-icon"><ShieldCheck size={20} /></div><div><b>Execution and privacy boundaries</b><small>V2 preview guardrails</small></div></div><ul><li>Human approval is required before specialist execution.</li><li>API keys are read only by the backend.</li><li>Only up to eight specialists run in parallel in this preview.</li><li>QA can reject the draft and request one bounded revision pass.</li><li>Tasks are held in process memory and may be lost after a backend restart.</li><li>Agents do not yet have website, filesystem, or terminal tools.</li></ul></div></div>
         )}
       </section>
 
