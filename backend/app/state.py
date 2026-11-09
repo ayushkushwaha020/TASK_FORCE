@@ -19,6 +19,9 @@ class TaskStore:
         self._repository = PersistentTaskRepository(configured_url) if configured_url and configured_url.strip() else None
         self.storage_backend = self._repository.backend if self._repository else "memory"
         self.durable_storage_configured = self._repository is not None
+        self.durable_queue_configured = bool(os.getenv("REDIS_URL", "").strip())
+        if self.durable_queue_configured and self._repository is None:
+            raise RuntimeError("REDIS_URL requires DATABASE_URL so approved task payloads survive worker restarts.")
         self._tasks: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         self._initialized = False
@@ -32,13 +35,24 @@ class TaskStore:
             async with self._lock:
                 for record in records:
                     if record.get("execution_status") in {"queued", "running", "reviewing"}:
-                        record["execution_status"] = "failed"
-                        record["qa_status"] = "rejected"
+                        if self.durable_queue_configured:
+                            # The unacknowledged Redis Stream entry is the durable
+                            # source of truth; the worker will reclaim it after its
+                            # configured idle lease expires.
+                            record["execution_status"] = "queued"
+                            record["qa_status"] = "pending_execution"
+                            event_kind = "execution_requeued"
+                            message = ("The API restarted during execution. The saved task was returned to "
+                                       "the durable Redis queue and will be retried by the worker.")
+                        else:
+                            record["execution_status"] = "failed"
+                            record["qa_status"] = "rejected"
+                            event_kind = "execution_interrupted"
+                            message = ("The API restarted while this task was executing. Its partial history "
+                                       "was restored, but no durable queue is configured to resume it.")
                         event = TaskEvent(
                             id=str(uuid.uuid4()), actor="Workforce",
-                            kind="execution_interrupted",
-                            message=("The API restarted while this task was executing. Its partial history "
-                                     "was restored, but this in-process job was not resumed."),
+                            kind=event_kind, message=message,
                         )
                         record.setdefault("events", []).append(event.model_dump(mode="json"))
                         record["updated_at"] = utc_now()
