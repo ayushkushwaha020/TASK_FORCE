@@ -19,9 +19,7 @@ class TaskStore:
         self._repository = PersistentTaskRepository(configured_url) if configured_url and configured_url.strip() else None
         self.storage_backend = self._repository.backend if self._repository else "memory"
         self.durable_storage_configured = self._repository is not None
-        self.durable_queue_configured = bool(os.getenv("REDIS_URL", "").strip())
-        if self.durable_queue_configured and self._repository is None:
-            raise RuntimeError("REDIS_URL requires DATABASE_URL so approved task payloads survive worker restarts.")
+        self.durable_queue_configured = bool(os.getenv("REDIS_URL", "").strip() and self._repository is not None)
         self._tasks: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         self._initialized = False
