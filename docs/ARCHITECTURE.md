@@ -4,7 +4,7 @@
 
 ```text
 React Command Center / Workforce HQ
-        | plan / approve / poll
+        | plan / approve / SSE stream (poll fallback)
         v
 FastAPI API
   |-- task planner and dynamic team composer
@@ -55,7 +55,7 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 - Team deliberation with contradictions and open questions.\n- Bounded live Tavily Search for research tasks, source capture and shared-memory injection.\n- Source-ID citation integrity check and explicit no-live-search disclosure when sources are unavailable.\n- Markdown download and browser Print / Save PDF.
 - Independent QA verdict and one revision round.
 - Recovery by reassigning a failed specialist workstream once to a successful team member.
-- Frontend polling for live execution status and event feed.
+- Frontend Server-Sent Events for live execution status and event feed, with polling fallback.
 
 ## V3 Supabase persistence and Redis Streams queue foundation
 - The TaskStore keeps the existing async mutation interface and persists the full task snapshot to `workforce_tasks` through SQLAlchemy when `DATABASE_URL` is configured.
@@ -68,7 +68,7 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 
 ## Current preview limits
 - Without `DATABASE_URL`, task state and memory live in process memory. With a Supabase Postgres `DATABASE_URL` configured, snapshots survive restarts; multiple API instances still need a durable worker/locking design.
-- Background execution still runs within the API service, not a durable queue. A restart during execution marks that task failed; work is not resumed.
+- Without `REDIS_URL`, approved tasks use FastAPI background tasks and an API restart marks in-flight tasks failed. With both `DATABASE_URL` and `REDIS_URL`, approved tasks are enqueued in Redis Streams and reclaimed after the configured pending-message idle threshold. The current worker remains in the API process and is single-instance only.
 - Native adapters currently handle text prompt/response calls. Native multimodal file uploads, browser/search tools, function calling, and terminal/code-execution tools are not yet connected.
 - No agent has browser, filesystem, terminal, shell, or external-service tools.
 - Provider output is model-generated text. The system must not claim code execution, website research, external verification, or completion of real-world actions.
