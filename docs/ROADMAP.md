@@ -1,38 +1,39 @@
 # Development Roadmap
 
-## V1 — Foundation (current branch)
-- [x] Repository baseline and project documentation
+## V1 — Foundation (delivered)
 - [x] React + TypeScript dual-interface shell
-- [x] FastAPI health and task-planning endpoints
-- [x] Dynamic role planning with mandatory QA role
+- [x] FastAPI planning API
+- [x] Dynamic specialist planning with mandatory QA role
 - [x] Server-side OpenAI-compatible planning adapter
-- [x] Explicit demo vs provider-planned labels
-- [ ] Build and runtime verification
-- [ ] First hosted preview
+- [x] Demo vs provider-backed plan status
+- [x] Initial hosting on Render
 
-## V2 — Real orchestration
-- Agent registry and lifecycle
-- Task graph and dependency scheduler
-- Structured agent messages
-- Shared task memory
-- Background execution and streaming status
-- Bounded retries and recovery
+## V2 — Agent execution preview (current)
+- [x] Human approval before internal AI execution
+- [x] Parallel model-backed specialist workstreams
+- [x] Shared task memory
+- [x] Structured agent-to-director messages
+- [x] Team deliberation and contradiction tracking
+- [x] Integrated deliverable drafting
+- [x] Independent QA can reject and request revisions
+- [x] One bounded revision cycle
+- [x] Bounded retry, optional fallback model, and one workstream reassignment
+- [x] Frontend polling, activity timeline, shared-memory feed, and QA view
+- [ ] Durable task persistence and background worker queue
+- [ ] Browser/search integration with source capture
+- [ ] Sandboxed code execution and deterministic test evidence
+- [ ] Human approval queue for external/destructive actions
+- [ ] Multi-provider quota-aware router
 
-## V3 — Tools and approvals
-- Sandboxed code execution
-- Controlled browser/search tools
-- Human approval queue
-- Audit log and permission policies
-- Independent QA execution and evidence
-
-## V4 — Production readiness
-- PostgreSQL persistence
-- Redis queue
-- Authentication and optional accounts
-- File storage and document generation
-- Usage budgets and quota-aware provider routing
-- Security, load, and end-to-end testing
-- Production deployment
+## V3 — Tools and production controls
+- [ ] Permission-scoped browser/search tools
+- [ ] Isolated code runner
+- [ ] File ingestion and document generation
+- [ ] Approval queue and audit trail
+- [ ] Postgres persistence and Redis job/event queue
+- [ ] User identities, quotas, and abuse protection
+- [ ] Cost and token budgets per task/team
+- [ ] Multi-provider adapter registry
 
 ## Release rule
-A milestone is complete only when its acceptance criteria are implemented and tested. Do not label planned work as shipped.
+A milestone is complete only when its acceptance criteria are implemented and tested. A visual indicator is not evidence that an agent executed a tool or verified a deliverable.
