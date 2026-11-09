@@ -367,7 +367,7 @@ export default function App() {
         )}
       </section>
 
-      <footer className="app-footer"><span>WORKFORCE ENGINE <b>V3 STORAGE FOUNDATION</b></span><span><CheckCircle2 size={13} /> {plan ? statusLabel(plan.execution_status) : "Ready for a mission"} <i /> {statusLabelText}</span></footer>
+      <footer className="app-footer"><span>WORKFORCE ENGINE <b>V3 AUTONOMOUS EXECUTION</b></span><span><CheckCircle2 size={13} /> {plan ? statusLabel(plan.execution_status) : "Ready for a mission"} <i /> {statusLabelText}</span></footer>
     </main>
   );
 }
