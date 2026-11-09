@@ -2,6 +2,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 from app.schemas import AgentPlan, PlanResponse, SubtaskPlan
 from app.state import TaskStore
