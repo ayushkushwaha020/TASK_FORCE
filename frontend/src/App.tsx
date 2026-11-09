@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import ROBOT_ATLAS_BASE64 from "./assets/robot-atlas.b64?raw";
 import {
   Activity, ArrowRight, CheckCircle2, ChevronDown, CircleHelp,
   Code2, FileText, LayoutDashboard, LoaderCircle, LockKeyhole,
@@ -29,6 +30,7 @@ type TaskPlan = {
   created_at: string; updated_at: string;
 };
 
+const ROBOT_ATLAS_URL = "data:image/webp;base64," + ROBOT_ATLAS_BASE64.trim();
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 const terminalStatuses = ["completed", "revision_required", "failed", "rejected"];
 
@@ -52,7 +54,7 @@ function Robot({ agent, index }: { agent?: Agent; index: number }) {
   const state = agent?.status || "idle";
   const variant = robotVariant(agent, index);
   return <div className={"robot robot-" + (index % 4) + " robot-state-" + state} title={agent ? agent.name + " · " + agent.role + " · " + state : "Workforce " + variant + " robot"}>
-    <div className={"robot-figure bot-" + variant} role="img" aria-label={agent?.name || variant + " specialist robot"} />
+    <div className={"robot-figure bot-" + variant} style={{ backgroundImage: `url("${ROBOT_ATLAS_URL}")` }} role="img" aria-label={agent?.name || variant + " specialist robot"} />
     <span className="robot-shadow" />
   </div>;
 }
@@ -221,7 +223,7 @@ export default function App() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand-lockup">
-          <div className="brand-mark brand-robot-mark"><div className="robot-figure bot-orbit" role="img" aria-label="Orbit planning robot" /></div>
+          <div className="brand-mark brand-robot-mark"><div className="robot-figure bot-orbit" style={{ backgroundImage: `url("${ROBOT_ATLAS_URL}")` }} role="img" aria-label="Orbit planning robot" /></div>
           <div><strong>workforce<span>.ai</span></strong><small>YOUR AI OPERATIONS TEAM</small></div>
         </div>
         <button className={"nav-item " + (view === "chat" ? "selected" : "")} onClick={() => setView("chat")}><MessageSquare size={18} /> Command Center</button>
@@ -309,7 +311,7 @@ export default function App() {
               </section>
 
               <div className="workspace-columns">
-                <section className="panel"><div className="panel-heading"><h3><Users size={17} /> Your specialist team</h3><span>{plan.agents.length} agents</span></div><div className="agent-list">{plan.agents.map((agent) => <div className="agent-row" key={agent.id}><div className={"agent-avatar bot-" + robotVariant(agent)} role="img" aria-label={agent.name + " robot"} /><div className="agent-info"><b>{agent.name}</b><span>{agent.role} · {agent.personality}</span><small>{agent.task}</small></div><span className={"agent-status status-" + agent.status}>{agent.status.replaceAll("_", " ")}</span></div>)}</div></section>
+                <section className="panel"><div className="panel-heading"><h3><Users size={17} /> Your specialist team</h3><span>{plan.agents.length} agents</span></div><div className="agent-list">{plan.agents.map((agent) => <div className="agent-row" key={agent.id}><div className={"agent-avatar bot-" + robotVariant(agent)} style={{ backgroundImage: `url("${ROBOT_ATLAS_URL}")` }} role="img" aria-label={agent.name + " robot"} /><div className="agent-info"><b>{agent.name}</b><span>{agent.role} · {agent.personality}</span><small>{agent.task}</small></div><span className={"agent-status status-" + agent.status}>{agent.status.replaceAll("_", " ")}</span></div>)}</div></section>
                 <section className="panel"><div className="panel-heading"><h3><Workflow size={17} /> Workstreams</h3><span>{plan.subtasks.length} planned</span></div><div className="subtask-list">{plan.subtasks.map((task, i) => <div className="subtask-row" key={task.id}><div className="step-number">{String(i + 1).padStart(2, "0")}</div><div><b>{task.title}</b><small>Owner: {task.owner}</small></div><span className={"planned-tag status-" + task.status}>{task.status.replaceAll("_", " ")}</span></div>)}</div><div className={"qa-card qa-" + plan.qa_status}><ShieldCheck size={19} /><div><b>Independent QA · {plan.qa_status.replaceAll("_", " ")}</b><small>{plan.qa_status === "passed" ? "The reviewer approved the deliverable." : plan.qa_status === "rejected" ? "The reviewer rejected the draft or the run stopped before review." : "The independent reviewer will inspect the integrated work after the specialists report."}</small></div></div></section>
               </div>
 
