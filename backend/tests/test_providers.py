@@ -143,6 +143,38 @@ class ProviderRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured[0]["json"]["system"], "You are a reviewer.")
         self.assertEqual(captured[0]["json"]["max_tokens"], 1500)
 
+
+    async def test_explicit_connection_test_uses_small_budgeted_calls_without_leaking_keys(self):
+        provider = {
+            "name": "test-provider", "protocol": "openai_compatible",
+            "base_url": "https://provider.example/v1", "api_key": "never-expose-this",
+            "model": "test-model", "max_output_tokens": 4096, "max_requests_per_hour": 5,
+        }
+        with patch("app.providers._provider_registry", return_value=[provider]), patch(
+            "app.providers._call_model", new=AsyncMock(return_value="OK")
+        ) as call:
+            result = await providers.test_provider_connections()
+        self.assertEqual(result["provider_count"], 1)
+        self.assertEqual(result["results"][0]["status"], "connected")
+        self.assertEqual(call.await_args.kwargs["json_mode"], False)
+        self.assertEqual(call.await_args.args[0]["max_output_tokens"], 32)
+        self.assertNotIn("never-expose-this", json.dumps(result))
+        self.assertEqual(len(providers._provider_usage["test-provider"]), 1)
+
+    async def test_explicit_connection_test_skips_provider_over_local_budget(self):
+        provider = {
+            "name": "budgeted-provider", "protocol": "openai_compatible",
+            "base_url": "https://provider.example/v1", "api_key": "secret",
+            "model": "test-model", "max_requests_per_hour": 1,
+        }
+        providers._provider_usage["budgeted-provider"].append(time.monotonic())
+        with patch("app.providers._provider_registry", return_value=[provider]), patch(
+            "app.providers._call_model", new=AsyncMock(return_value="OK")
+        ) as call:
+            result = await providers.test_provider_connections()
+        self.assertEqual(result["results"][0]["status"], "skipped")
+        call.assert_not_awaited()
+
     async def test_legacy_single_endpoint_configuration_remains_supported(self):
         with patch.dict("os.environ", {"AI_PROVIDERS_JSON": "", "AI_API_KEY": "legacy-secret", "AI_API_BASE_URL": "https://legacy.example/v1", "AI_MODEL": "legacy-model"}):
             status = providers.provider_status()
