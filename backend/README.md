@@ -33,6 +33,7 @@ The router accepts multiple endpoints through the server-only `AI_PROVIDERS_JSON
 - `max_requests_per_hour`: a local per-process request cap.
 - `fallback_model`: another model on the same provider endpoint.
 - `max_output_tokens`: per-request output cap (256–65,536).
+- `max_output_field`: for OpenAI-compatible endpoints, choose `max_tokens` (default) or `max_completion_tokens`.
 - `api_version`: used by Anthropic Messages; defaults to `2026-10-21`.
 
 Example (replace placeholder keys and model IDs with values from your own provider accounts):
