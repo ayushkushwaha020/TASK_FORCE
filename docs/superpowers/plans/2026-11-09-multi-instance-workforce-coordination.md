@@ -17,6 +17,7 @@
 - PostgreSQL is the canonical task store; Redis Pub/Sub is a wake-up hint, never the source of truth.
 - Lease TTL is 30 seconds; heartbeat interval is 10 seconds; SSE reconciliation interval is 15 seconds.
 - Redis pending-entry minimum idle threshold remains 15 minutes and must not be treated as the execution lock.
+- Keep the task status API compatible; add the existing queue terminal state `cancelled` to the Pydantic status literal rather than silently treating it as an invalid response.
 - Lease acquire, renew, and release must compare owner token and fencing generation atomically.
 - Every execution-originated task mutation must be rejected when its fencing generation is stale.
 - No provider-call exactly-once guarantee; ambiguous in-flight provider work must not be blindly replayed.
@@ -98,9 +99,9 @@ Run: `cd backend && python -m unittest discover -s tests -p 'test_database.py' -
 
 Expected: FAIL because version, fence, and atomic compare-and-save operations do not exist.
 
-- [ ] **Step 3: Add version and fence columns to the SQLAlchemy table.** Keep the existing private schema and connection-pool behavior. Do not remove the current Supabase RLS or privilege revocation setup.
+- [ ] **Step 3: Add version and fence columns to the SQLAlchemy table.** Keep the existing private schema and connection-pool behavior. Do not remove the current Supabase RLS or privilege revocation setup. Add `cancelled` to the task execution-status Literal because the existing queue already treats it as terminal.
 - [ ] **Step 4: Implement atomic repository operations.** Use a transaction and conditional update/upsert so the stored version is incremented only when the caller's expected version matches. Enforce the execution fence in the same database write. Distinguish version conflicts from stale fencing generations. Make `get` and `load_all` return metadata from the table columns, not an untrusted cached copy inside the payload.
-- [ ] **Step 5: Add the additive Supabase migration.** Use `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for both columns, backfill existing rows to version 1 and fence 0, and preserve RLS plus revokes. The migration must be safe to apply to the existing V3 table without dropping task data.
+- [ ] **Step 5: Add the additive Supabase migration.** Use `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for both columns, backfill existing rows to version 1 and fence 0, and preserve RLS plus revokes. The migration must be safe to apply to the existing V3 table without dropping task data. In `PersistentTaskRepository.initialize`, add a guarded additive SQLite column upgrade for an existing local database (inspect `PRAGMA table_info` before `ALTER TABLE`); never drop or recreate an existing task table.
 - [ ] **Step 6: Run focused database tests and confirm pass.**
 
 Run: `cd backend && python -m unittest discover -s tests -p 'test_database.py' -v`
@@ -178,7 +179,7 @@ Expected: FAIL because the current worker has no lease, the startup path requeue
 - [ ] **Step 5: Supervise execution with the heartbeat.** Run execution through `run_with_heartbeat`; cancel and await execution on lease loss. Ensure cancellation is not converted into a normal failed result and do not acknowledge a non-terminal task after cancellation.
 - [ ] **Step 6: Thread the lease through every execution-originated mutation.** Pass the same lease through specialist work, reassignment/recovery, research, deliberation, compilation, QA, revision, status, and event writes. Every TaskStore mutation performed by the execution pipeline must carry it, including error paths.
 - [ ] **Step 7: Make crash recovery conservative.** Remove startup logic that blindly resets `running` tasks to `queued`. Only a task still durably queued before provider work begins may be started on redelivery. For a persisted running task without a provable safe checkpoint, save `revision_required`, `qa_status=rejected`, and a human-review event; never reissue an ambiguous provider request automatically.
-- [ ] **Step 8: Keep delivery and dead-letter behavior bounded.** Preserve the current 3-delivery limit and the 15-minute pending claim threshold; never let `XAUTOCLAIM` itself grant execution ownership.
+- [ ] **Step 8: Keep delivery and dead-letter behavior bounded.** Preserve the current 3-delivery limit and the 15-minute pending claim threshold; never let `XAUTOCLAIM` itself grant execution ownership. Release the lease in a `finally` block after execution or recovery; the Lua compare-token/generation check must make a late release from an old worker harmless.
 - [ ] **Step 9: Run the focused tests and the full backend suite.**
 
 Run: `cd backend && python -m unittest discover -s tests -v`
@@ -201,7 +202,7 @@ git commit -m "feat: fence queue workers and recover interrupted tasks safely"
 
 **Interfaces:**
 - Produce `TaskChange(task_id: str, version: int, event_cursor: str | None)`.
-- Produce `TaskEventHub.register(task_id: str) -> asyncio.Queue[TaskChange]`, `unregister(task_id: str, queue: asyncio.Queue[TaskChange]) -> None`, and `notify(change: TaskChange) -> None`.
+- Produce `TaskEventHub.register(task_id: str) -> asyncio.Queue[TaskChange]`, `unregister(task_id: str, queue: asyncio.Queue[TaskChange]) -> None`, and `notify(change: TaskChange) -> None`. Use a bounded, coalescing listener queue because messages are wake-up hints, not a durable event history.
 - Produce `RedisTaskEventBus.publish(change: TaskChange) -> None` and `run_subscriber(hub: TaskEventHub, stop_event: asyncio.Event) -> None`.
 - Channel: `workforce:task-events`; JSON payload contains only `task_id`, `version`, and `event_cursor`.
 
@@ -256,7 +257,7 @@ Expected: FAIL because the SSE loop currently polls local TaskStore state and ha
 
 Run: `cd backend && python -m unittest discover -s tests -p 'test_sse.py' -v` and `cd backend && python -m unittest discover -s tests -v`
 
-Expected: PASS; API remains available during Pub/Sub outage and cross-instance SSE converges on PostgreSQL state.
+Expected: PASS; API remains available during Pub/Sub outage and cross-instance SSE converges on PostgreSQL state. The local hub must coalesce a burst of hints without unbounded per-client memory growth.
 
 - [ ] **Step 8: Commit.**
 
