@@ -1,7 +1,7 @@
 # Multi-Instance Workforce Coordination — Design
 
 **Date:** 2026-11-09  
-**Status:** Proposed — awaiting user design approval  
+**Status:** Approved — implementation plan prepared for review  
 **Target branch:** feature/autonomous-ai-workforce-v3  
 **Live deployment:** unchanged; main remains untouched
 
