@@ -64,7 +64,8 @@ def make_demo_plan(instruction: str, category: str) -> tuple[list[AgentPlan], li
     # Small requests use fewer specialists; complex requests keep the full team.
     complexity = len(instruction.split())
     count = min(len(roles), max(3, 4 if complexity < 18 else len(roles)))
-    selected = roles[:count]
+    qa_role = next(role for role in roles if "QA" in role[0] or "Verifier" in role[0])
+    selected = [role for role in roles if role != qa_role][:count - 1] + [qa_role]
     agents = [
         AgentPlan(
             id=f"agent-{index + 1}",
