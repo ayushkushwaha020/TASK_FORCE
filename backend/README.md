@@ -116,7 +116,7 @@ Agents do not yet have browser, filesystem, terminal, or external-action tools. 
 
 The recommended hosted database is **Supabase Postgres**. Set the connection URI in the backend-only `DATABASE_URL` environment variable. Do not put the URI in the frontend or commit it to GitHub.
 
-**Render connection mode:** Render services use IPv4 networking. In Supabase Dashboard choose **Connect → Session pooler** and copy its PostgreSQL URI (usually port `5432`). The adapter also supports the transaction pooler (port `6543`) and disables asyncpg prepared-statement caching for that mode. Supabase SSL is required automatically for Supabase pooler hosts.
+**Render connection mode:** Render services use IPv4 networking. In Supabase Dashboard choose **Connect → Transaction pooler** and copy its PostgreSQL URI (port `6543`). The adapter disables both SQLAlchemy's prepared-statement cache and asyncpg's driver cache for this mode. Session pooler (port `5432`) is also supported. Supabase SSL is required automatically for Supabase pooler hosts.
 
 On startup, SQLAlchemy creates the `workforce_private.workforce_tasks` table. The app persists the entire task snapshot: agents, workstreams, events, messages, shared memory, research sources, QA state, and deliverables. The schema is deliberately separate from the exposed `public` API schema, and the adapter enables row-level security and revokes access from `PUBLIC`, `anon`, and `authenticated`. Only the backend's private database connection should access these records.
 
