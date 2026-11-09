@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import uuid
 from typing import Any
 
@@ -29,14 +30,14 @@ def _worker_context(task: PlanResponse, revision_notes: str | None = None) -> st
         f"[{entry.source_agent} — {entry.title}]\n{entry.content[:1600]}" for entry in entries
     ) or "No shared findings yet."
     revision = f"\n\nQA revision instructions:\n{revision_notes}" if revision_notes else ""
-    source_text = "\\n".join(
-        f"[{source.source_id}] {source.title}\\nURL: {source.url}\\nQuery: {source.query}\\nSnippet: {source.snippet[:1400]}"
+    source_text = "\n".join(
+        f"[{source.source_id}] {source.title}\nURL: {source.url}\nQuery: {source.query}\nSnippet: {source.snippet[:1400]}"
         for source in task.research_sources
     ) or "No live web sources were collected for this task."
     research_guidance = (
-        "\\n\\nRESEARCH CITATION RULES: Use only the supplied source IDs such as [S1] when attributing web evidence. "
+        "\n\nRESEARCH CITATION RULES: Use only the supplied source IDs such as [S1] when attributing web evidence. "
         "Do not invent sources or URLs. Search snippets are short excerpts, not full-page review. "
-        "Distinguish current source evidence, model background knowledge, and unverified assumptions.\\n"
+        "Distinguish current source evidence, model background knowledge, and unverified assumptions.\n"
         + source_text
         if task.category == "research"
         else ""
@@ -140,6 +141,10 @@ async def _compile_deliverable(task_id: str, task: PlanResponse, results: list[d
         f"## {item['agent']['name']} ({item['agent'].get('role', 'Specialist')})\n{item['output'][:5000]}"
         for item in results if item.get("output")
     )
+    source_register = "\\n".join(
+        f"[{source.source_id}] {source.title} — {source.url}"
+        for source in task.research_sources
+    ) or "No live web sources were collected."
     system = (
         "You are the principal editor of a specialist AI workforce. Integrate the contributions into one useful, complete deliverable. "
         "Resolve contradictions only when the evidence supports doing so; otherwise describe the difference. "
@@ -150,6 +155,7 @@ async def _compile_deliverable(task_id: str, task: PlanResponse, results: list[d
         f"USER MISSION:\n{task.instruction}\n\nTEAM DELIBERATION:\n{discussion[:9000]}"
         f"\n\nSPECIALIST OUTPUTS:\n{contributions[:24000]}"
         + (f"\n\nQA REVISION REQUEST:\n{revision_notes}" if revision_notes else "")
+        + (f"\n\nRETRIEVED WEB SOURCE REGISTER (snippets only, not full-page verification):\n{source_register}\nCite web-supported claims using these exact IDs like [S1]. Never invent a source ID." if task.category == "research" else "")
         + "\n\nCreate the integrated deliverable now. State any scope limits clearly."
     )
     async with _provider_semaphore:
@@ -186,6 +192,20 @@ async def _qa_review(task_id: str, task: PlanResponse, deliverable: str, discuss
     verdict["revision_instructions"] = str(verdict.get("revision_instructions", "Address the QA issues and submit a corrected deliverable."))[:6000]
     issues = verdict.get("issues", [])
     verdict["issues"] = [str(issue)[:1000] for issue in issues[:12]] if isinstance(issues, list) else [str(issues)[:1000]]
+    if task.category == "research" and task.research_sources:
+        valid_ids = {source.source_id for source in task.research_sources}
+        cited_ids = set(re.findall(r"\[(S\\d+)\]", deliverable))
+        invalid_ids = cited_ids - valid_ids
+        if not cited_ids or invalid_ids:
+            verdict["decision"] = "revise"
+            verdict["summary"] = "The research draft did not pass the source-citation integrity check."
+            citation_issue = (
+                "The draft must cite at least one collected source using its exact source ID, "
+                "and must not cite unprovided IDs. Available IDs: " + ", ".join(sorted(valid_ids))
+                + (". Invalid IDs used: " + ", ".join(sorted(invalid_ids)) if invalid_ids else ".")
+            )
+            verdict["issues"] = (verdict["issues"] + [citation_issue])[:12]
+            verdict["revision_instructions"] = (verdict["revision_instructions"] + " " + citation_issue)[:6000]
     affected = verdict.get("affected_agents", [])
     verdict["affected_agents"] = [str(name)[:80] for name in affected[:8]] if isinstance(affected, list) else []
     await TASKS.update_agent(task_id, str(qa["id"]), status="completed" if decision == "approve" else "revision_requested")
