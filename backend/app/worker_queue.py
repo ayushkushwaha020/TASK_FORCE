@@ -40,6 +40,7 @@ class RedisStreamTaskQueue:
         )
         self.consumer = f"{socket.gethostname()}-{uuid.uuid4().hex[:10]}"
         self._last_claim_scan = 0.0
+        self._claim_cursor = "0-0"
 
     async def initialize(self) -> None:
         await self.redis.ping()
@@ -133,10 +134,14 @@ class RedisStreamTaskQueue:
     async def _claim_stale(self) -> list[tuple[str, dict[str, Any]]]:
         result = await self.redis.xautoclaim(
             STREAM_NAME, CONSUMER_GROUP, self.consumer,
-            min_idle_time=MIN_IDLE_CLAIM_MS, start_id="0-0", count=5,
+            min_idle_time=MIN_IDLE_CLAIM_MS, start_id=self._claim_cursor, count=5,
         )
         if not result or len(result) < 2:
+            self._claim_cursor = "0-0"
             return []
+        # XAUTOCLAIM provides a cursor so pending lists larger than COUNT are
+        # scanned across successive passes rather than restarting at 0-0.
+        self._claim_cursor = str(result[0] or "0-0")
         return [(message_id, fields) for message_id, fields in result[1]]
 
     async def _read_new(self) -> list[tuple[str, dict[str, Any]]]:
