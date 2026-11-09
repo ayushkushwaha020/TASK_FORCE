@@ -17,6 +17,7 @@ type AgentMessage = { id: string; timestamp: string; from_agent: string; to_agen
 type QaFeedback = { decision?: string; summary?: string; issues?: string[]; revision_instructions?: string; affected_agents?: string[] };
 type ProviderInfo = { name: string; model: string; protocol: string; max_requests_per_hour: number | null; requests_this_hour: number; cooling_down: boolean };
 type ProviderTest = { name: string; protocol: string; model: string; status: "connected" | "failed" | "skipped"; latency_ms: number | null; message: string };
+type ResearchSource = { source_id: string; query: string; title: string; url: string; snippet: string; score?: number | null; published_date?: string | null; };
 type TaskPlan = {
   task_id: string; instruction: string; title: string; category: string;
   execution_mode: "demo" | "provider_planned"; notice: string;
@@ -24,6 +25,7 @@ type TaskPlan = {
   execution_status: string; approval_status: string; qa_status: string;
   qa_feedback: string | null; team_discussion: string | null; result_markdown: string | null;
   shared_memory: MemoryItem[]; messages: AgentMessage[]; events: EventItem[];
+  research_sources: ResearchSource[]; research_status: string; research_notice: string | null; research_credits: number;
   created_at: string; updated_at: string;
 };
 
@@ -112,6 +114,24 @@ export default function App() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [taskId, executionStatus]);
 
+  function downloadDeliverableMarkdown() {
+    if (!plan?.result_markdown) return;
+    const content = "# " + plan.title + "\\n\\n" + plan.result_markdown;
+    const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = (plan.title || "workforce-deliverable").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") + ".md";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function printDeliverableAsPdf() {
+    if (!plan?.result_markdown) return;
+    window.print();
+  }
   async function testProviderConnections() {
     if (testingProviders || providerDetails.length === 0) return;
     setTestingProviders(true);
@@ -238,6 +258,13 @@ export default function App() {
             {!plan ? <div className="empty-workspace"><div className="empty-icon"><Workflow size={30} /></div><h2>No active mission yet</h2><p>Submit a task in Command Center and your team will appear here.</p><button className="send-button" onClick={() => setView("chat")}>Go to Command Center <ArrowRight size={16} /></button></div> : <>
               <div className="mission-card"><div><span className="card-kicker">CURRENT MISSION · {plan.category.toUpperCase()}</span><h2>{plan.title}</h2><p>{taskSummary} · QA: {plan.qa_status.replaceAll("_", " ")}</p></div><span className={"mode-tag " + plan.execution_mode}>{plan.execution_mode === "demo" ? "DEMO PLAN" : "LIVE PROVIDER PLAN"}</span></div>
               <div className="notice-banner"><ShieldCheck size={17} /><span>{plan.notice}</span></div>
+              {plan.category === "research" && (
+                <section className="panel research-panel">
+                  <div className="panel-heading"><h3><Search size={17} /> Live research sources</h3><span>{plan.research_sources.length} sources · {plan.research_credits} search credits</span></div>
+                  <div className="research-status-row"><b className={"research-status status-" + plan.research_status}>{plan.research_status.replaceAll("_", " ")}</b><span>{plan.research_notice || "Live search will start after you approve this plan."}</span></div>
+                  {plan.research_sources.length === 0 ? <p className="empty-feed">No live web sources have been collected. Add TAVILY_API_KEY in the backend hosting environment to enable capped source search for approved research tasks.</p> : <div className="research-source-list">{plan.research_sources.map((source) => <article className="research-source" key={source.source_id}><div className="research-source-meta"><b>{source.source_id}</b><span>{source.query}</span></div><a href={source.url} target="_blank" rel="noreferrer">{source.title} <ArrowRight size={12} /></a><p>{source.snippet}</p><small>{source.published_date ? "Published: " + source.published_date + " · " : ""}{source.score === null || source.score === undefined ? "" : "Search relevance: " + source.score.toFixed(2) + " · "}{new URL(source.url).hostname}</small></article>)}</div>}
+                </section>
+              )}
 
               <div className="execution-banner">
                 <div className="execution-status-icon">{plan.execution_status === "completed" ? <CheckCircle2 size={20} /> : plan.execution_status === "failed" ? <LockKeyhole size={20} /> : <Activity size={20} />}</div>
@@ -279,7 +306,7 @@ export default function App() {
               )}
 
               {plan.result_markdown && (
-                <section className="panel detail-panel"><div className="panel-heading"><h3><FileText size={17} /> Integrated deliverable</h3><span>{plan.execution_status === "completed" ? "QA approved" : "Draft · not approved"}</span></div><pre className="deliverable-content">{plan.result_markdown}</pre></section>
+                <section className="panel detail-panel deliverable-panel"><div className="panel-heading"><h3><FileText size={17} /> Integrated deliverable</h3><div className="deliverable-actions"><span>{plan.execution_status === "completed" ? "QA approved" : "Draft · not approved"}</span><button className="secondary-button" onClick={downloadDeliverableMarkdown}>Download .md</button><button className="secondary-button" onClick={printDeliverableAsPdf}>Print / Save PDF</button></div></div><pre className="deliverable-content">{plan.result_markdown}</pre></section>
               )}
 
               <div className="workspace-columns lower-panels">
