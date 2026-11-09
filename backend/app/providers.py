@@ -134,7 +134,7 @@ async def _call_model(
 async def request_completion(
     messages: list[dict[str, str]], *, temperature: float = 0.2, json_mode: bool = False
 ) -> str:
-    """Route to configured endpoints in priority order, with quota caps and bounded failover."""
+    """Route to configured endpoints in priority order, budgeting each actual HTTP attempt."""
     try:
         providers = _provider_registry()
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -143,9 +143,6 @@ async def request_completion(
         raise RuntimeError("Configure AI_PROVIDERS_JSON or AI_API_KEY and AI_MODEL on the backend.")
     errors: list[str] = []
     for provider in providers:
-        if not _reserve_provider(provider):
-            errors.append(provider["name"] + ": cooling down or local request budget reached")
-            continue
         models = [provider["model"]]
         fallback_model = provider.get("fallback_model", "")
         if fallback_model and fallback_model != provider["model"]:
@@ -153,12 +150,20 @@ async def request_completion(
         provider_failed = False
         for model_index, model in enumerate(models):
             for attempt in range(2):
+                # Count every underlying provider request, including retries and fallback models.
+                if not _reserve_provider(provider):
+                    errors.append(provider["name"] + ": cooling down or local request budget reached")
+                    provider_failed = True
+                    break
                 try:
-                    return await _call_model(provider, messages, temperature=temperature, json_mode=json_mode, model=model)
+                    return await _call_model(
+                        provider, messages, temperature=temperature,
+                        json_mode=json_mode, model=model,
+                    )
                 except httpx.HTTPStatusError as exc:
                     status = exc.response.status_code
                     if status == 429:
-                        # Respect this endpoint's rate limit; move to a different configured provider.
+                        # Respect the endpoint's rate limit and move to another configured provider.
                         _provider_cooldowns[provider["name"]] = time.monotonic() + 60
                         errors.append(provider["name"] + ": provider rate limit response")
                         provider_failed = True
