@@ -24,6 +24,9 @@ class TaskStore:
 
     async def create(self, plan: PlanResponse) -> PlanResponse:
         record = plan.model_dump(mode="json")
+        if plan.category == "research":
+            record["research_status"] = "not_started"
+            record["research_notice"] = "Live web search begins only after you approve this research plan."
         record["updated_at"] = utc_now()
         async with self._lock:
             self._tasks[plan.task_id] = record
