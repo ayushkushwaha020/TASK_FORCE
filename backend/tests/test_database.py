@@ -21,7 +21,7 @@ class DatabaseUrlTests(unittest.TestCase):
         )
         url = make_url(normalized)
         self.assertEqual(url.query.get("ssl"), "require")
-        self.assertEqual(url.query.get("statement_cache_size"), "0")
+        self.assertEqual(url.query.get("prepared_statement_cache_size"), "0")
 
     def test_local_sqlite_url_is_normalized(self):
         self.assertEqual(
