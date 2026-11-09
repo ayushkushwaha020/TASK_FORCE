@@ -47,6 +47,29 @@ class PersistentTaskStoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any(event.kind == "execution_interrupted" for event in restored.events))
             await second.close()
 
+    async def test_inflight_task_is_requeued_when_redis_queue_is_configured(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"REDIS_URL": "rediss://default:secret@example.upstash.io:6379"}):
+            url = "sqlite+aiosqlite:///" + str(Path(directory) / "tasks.db")
+            first = TaskStore(url)
+            await first.initialize()
+            plan = await first.create(make_plan())
+            await first.update(plan.task_id, approval_status="approved", execution_status="running")
+            await first.close()
+
+            second = TaskStore(url)
+            await second.initialize()
+            restored = await second.get(plan.task_id)
+            self.assertIsNotNone(restored)
+            assert restored is not None
+            self.assertEqual(restored.execution_status, "queued")
+            self.assertTrue(any(event.kind == "execution_requeued" for event in restored.events))
+            await second.close()
+
+    async def test_redis_queue_requires_persistent_task_storage(self):
+        with patch.dict("os.environ", {"REDIS_URL": "rediss://default:secret@example.upstash.io:6379"}):
+            with self.assertRaises(RuntimeError):
+                TaskStore(None)
+
     async def test_waiting_for_approval_survives_restart_without_interruption(self):
         with tempfile.TemporaryDirectory() as directory:
             url = "sqlite+aiosqlite:///" + str(Path(directory) / "tasks.db")
