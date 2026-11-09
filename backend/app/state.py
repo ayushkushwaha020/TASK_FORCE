@@ -86,6 +86,14 @@ class TaskStore:
                 record["shared_memory"].append(item.model_dump(mode="json"))
                 record["updated_at"] = utc_now()
 
+
+    async def add_source(self, task_id: str, source: Any) -> None:
+        async with self._lock:
+            record = self._tasks.get(task_id)
+            if record is not None:
+                record["research_sources"].append(source.model_dump(mode="json"))
+                record["updated_at"] = utc_now()
+
     async def add_message(self, task_id: str, from_agent: str, to_agent: str, kind: str, content: str) -> None:
         item = AgentMessage(
             id=str(uuid.uuid4()), from_agent=from_agent, to_agent=to_agent,
