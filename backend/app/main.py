@@ -15,15 +15,30 @@ from .orchestrator import create_plan
 from .providers import provider_is_configured, provider_status, test_provider_connections
 from .schemas import ApprovalRequest, PlanRequest, PlanResponse
 from .state import TASKS
+from .worker_queue import TASK_QUEUE
 from .web_research import web_research_is_configured
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # A durable queue is enabled only when both DATABASE_URL and REDIS_URL
+    # are configured. TaskStore validates that dependency before the app serves.
     await TASKS.initialize()
+    worker_task = None
+    if TASK_QUEUE is not None:
+        await TASK_QUEUE.initialize()
+        worker_task = __import__("asyncio").create_task(TASK_QUEUE.run(), name="workforce-redis-stream-worker")
     try:
         yield
     finally:
+        if worker_task is not None:
+            worker_task.cancel()
+            try:
+                await worker_task
+            except __import__("asyncio").CancelledError:
+                pass
+        if TASK_QUEUE is not None:
+            await TASK_QUEUE.close()
         await TASKS.close()
 
 
@@ -73,12 +88,20 @@ async def root():
         "version": "0.3.0",
         "storage_backend": TASKS.storage_backend,
         "durable_storage_configured": TASKS.durable_storage_configured,
+        "task_queue_backend": "redis_streams" if TASK_QUEUE is not None else "background_tasks_preview",
+        "durable_queue_configured": TASK_QUEUE is not None,
     }
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "autonomous-ai-workforce-api", "version": "0.3.0", "storage_backend": TASKS.storage_backend, "durable_storage_configured": TASKS.durable_storage_configured}
+    return {
+        "status": "ok", "service": "autonomous-ai-workforce-api", "version": "0.3.0",
+        "storage_backend": TASKS.storage_backend,
+        "durable_storage_configured": TASKS.durable_storage_configured,
+        "task_queue_backend": "redis_streams" if TASK_QUEUE is not None else "background_tasks_preview",
+        "durable_queue_configured": TASK_QUEUE is not None,
+    }
 
 
 @app.get("/api/config/status")
@@ -88,6 +111,15 @@ async def config_status():
     status["web_research_provider"] = "tavily" if web_research_is_configured() else None
     status["storage_backend"] = TASKS.storage_backend
     status["durable_storage_configured"] = TASKS.durable_storage_configured
+    status["task_queue_backend"] = "redis_streams" if TASK_QUEUE is not None else "background_tasks_preview"
+    status["durable_queue_configured"] = TASK_QUEUE is not None
+    if TASK_QUEUE is not None:
+        try:
+            status["task_queue"] = await TASK_QUEUE.status()
+        except Exception as exc:
+            status["task_queue"] = {"backend": "redis_streams", "configured": True, "status": "unavailable", "error": type(exc).__name__}
+    else:
+        status["task_queue"] = {"backend": "background_tasks_preview", "configured": False}
     return status
 
 
@@ -133,7 +165,16 @@ async def decide_task_approval(task_id: str, decision: ApprovalRequest, backgrou
         )
     updated = await TASKS.update(task_id, execution_status="queued", approval_status="approved")
     await TASKS.add_event(task_id, "Human", "plan_approved", "The user approved the team plan and authorised internal AI execution.")
-    background_tasks.add_task(execute_task, task_id)
+    if TASK_QUEUE is not None:
+        try:
+            message_id = await TASK_QUEUE.enqueue(task_id)
+            await TASKS.add_event(task_id, "Workforce Queue", "queue_job_enqueued", f"Approved task was committed to the durable Redis queue (message {message_id}).")
+        except Exception as exc:
+            await TASKS.update(task_id, execution_status="failed", qa_status="rejected")
+            await TASKS.add_event(task_id, "Workforce Queue", "queue_enqueue_failed", f"Durable queue submission failed ({type(exc).__name__}); no execution was started.")
+            raise HTTPException(status_code=503, detail="The durable task queue is unavailable. The task was not started; check the queue configuration and retry with a new plan.") from exc
+    else:
+        background_tasks.add_task(execute_task, task_id)
     result = await TASKS.get(task_id)
     return result or updated
 
