@@ -35,6 +35,7 @@ Statuses are evidence-based:
 - [~] OpenAI-compatible, Gemini, and Anthropic provider adapters and connection-test code are implemented; no live provider-backed end-to-end task has been verified with configured production credentials.
 - [~] New Scout, Forge, Orbit, and Sentinel robot artwork and state animations are deployed to the V1 Render frontend. Communication, meeting, and task-specific gesture animations are not implemented.
 - [ ] Live provider-backed task execution verified end-to-end with a configured key.
+- [x] Server-Sent Events task stream with EventSource frontend updates and polling fallback (single API process).
 - [ ] Full responsive/manual accessibility review of the live UI.
 - [ ] File upload and secure file ingestion.
 - [ ] General browser navigation and page extraction.
@@ -58,7 +59,7 @@ Statuses are evidence-based:
 - [ ] Backfill any pre-existing in-memory tasks (not currently supported).
 - [x] Redis Streams queue with consumer group, pending-message reclamation, bounded delivery attempts, and dead-letter handling (single API worker).
 - [~] Interrupted jobs are returned to queued state when durable Redis queue mode is configured; live process-crash/reclaim test is not available without a configured Redis instance.
-- [ ] Multi-worker leases/heartbeats, event fanout, and production deployment.
+- [ ] Multi-worker leases/heartbeats, cross-process Redis event fanout, and production deployment.
 - [ ] Server-Sent Events or WebSockets instead of polling.
 - [ ] Persistent project memory and permission-scoped agent memory.
 
