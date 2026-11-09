@@ -118,7 +118,7 @@ export default function App() {
 
   function downloadDeliverableMarkdown() {
     if (!plan?.result_markdown) return;
-    const content = "# " + plan.title + "\\n\\n" + plan.result_markdown;
+    const content = "# " + plan.title + "\n\n" + plan.result_markdown;
     const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
