@@ -11,6 +11,7 @@ from .orchestrator import create_plan
 from .providers import provider_is_configured, provider_status, test_provider_connections
 from .schemas import ApprovalRequest, PlanRequest, PlanResponse
 from .state import TASKS
+from .web_research import web_research_is_configured
 
 load_dotenv()
 
@@ -56,7 +57,10 @@ async def health():
 
 @app.get("/api/config/status")
 async def config_status():
-    return provider_status()
+    status = provider_status()
+    status["web_research_configured"] = web_research_is_configured()
+    status["web_research_provider"] = "tavily" if web_research_is_configured() else None
+    return status
 
 
 @app.post("/api/providers/test")
