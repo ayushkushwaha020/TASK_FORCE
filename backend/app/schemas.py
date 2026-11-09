@@ -93,6 +93,9 @@ class PlanResponse(BaseModel):
     result_markdown: str | None = None
     shared_memory: list[SharedMemoryEntry] = Field(default_factory=list)
     research_sources: list[ResearchSource] = Field(default_factory=list)
+    research_status: Literal["not_applicable", "not_started", "searching", "completed", "partial", "failed", "not_configured"] = "not_applicable"
+    research_notice: str | None = None
+    research_credits: int = 0
     messages: list[AgentMessage] = Field(default_factory=list)
     events: list[TaskEvent] = Field(default_factory=list)
     created_at: str = Field(default_factory=utc_now)
