@@ -20,7 +20,7 @@
 - [x] Bounded retry, optional fallback model, and one workstream reassignment
 - [x] Frontend polling, activity timeline, shared-memory feed, and QA view
 - [x] Server-Sent Events task stream with EventSource frontend updates and polling fallback (single API process)
-- [ ] Durable background worker queue and event fanout (V3)
+- [x] Durable Redis Streams queue and single-process worker recovery (V3; cross-process fanout remains open)
 - [x] Capped Tavily search for research tasks with URL/snippet source capture
 - [x] Source-ID citations and independent QA integrity check
 - [x] Markdown download and browser print-to-PDF export\n- [ ] General browser navigation/page extraction
