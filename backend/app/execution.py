@@ -160,6 +160,20 @@ async def _compile_deliverable(task_id: str, task: PlanResponse, results: list[d
     )
     async with _provider_semaphore:
         result = await request_completion([{"role": "system", "content": system}, {"role": "user", "content": user}], temperature=0.2)
+    if task.category == "research":
+        if task.research_sources:
+            source_lines = ["", "", "## Sources"]
+            for source in task.research_sources:
+                source_lines.append(
+                    f"[{source.source_id}] {source.title}. {source.url} (search query: {source.query})"
+                )
+            result = result.rstrip() + "\n" + "\n".join(source_lines)
+        else:
+            result = result.rstrip() + (
+                "\n\n## Research limitations\n"
+                "No live web sources were collected for this task. Live web search was not performed; "
+                "this draft may contain model background knowledge and must not be treated as current source-verified research."
+            )
     await TASKS.update(task_id, result_markdown=result[:30000])
     await TASKS.add_event(task_id, "Report Editor", "deliverable_drafted", "The specialist contributions were integrated into a draft deliverable.")
     return result
@@ -198,7 +212,8 @@ async def _qa_review(task_id: str, task: PlanResponse, deliverable: str, discuss
     issues = verdict.get("issues", [])
     verdict["issues"] = [str(issue)[:1000] for issue in issues[:12]] if isinstance(issues, list) else [str(issues)[:1000]]
     if task.category == "research":
-        cited_ids = set(re.findall(r"\[(S\d+)\]", deliverable))
+        main_report = re.split(r"(?im)^#{1,3}\s*(?:sources|references)\s*$", deliverable, maxsplit=1)[0]
+        cited_ids = set(re.findall(r"\[(S\d+)\]", main_report))
         valid_ids = {source.source_id for source in task.research_sources}
         invalid_ids = cited_ids - valid_ids
         citation_issue = None
