@@ -16,7 +16,8 @@ uvicorn app.main:app --reload --port 8000
 - `GET /api/config/status` — provider names, protocols, models, local budget usage, and status; never returns secrets.
 - `POST /api/providers/test` — user-triggered, one-request connectivity test per configured provider; reports status/latency without returning credentials.
 - `POST /api/tasks/plan` — create a proposed team plan. JSON: `{"instruction":"..." }`.
-- `GET /api/tasks/{task_id}` — poll task state, events, shared memory, messages, QA, and deliverable.
+- `GET /api/tasks/{task_id}` — retrieve task state, events, shared memory, messages, QA, and deliverable.
+- `GET /api/tasks/{task_id}/stream` — Server-Sent Events stream for task activity and status updates; clients can reconnect using `Last-Event-ID`.
 - `POST /api/tasks/{task_id}/approval` — JSON `{"decision":"approve"}` or `{"decision":"reject","reason":"..." }`.
 
 ## Provider router
@@ -132,7 +133,7 @@ To enable durable approved-task delivery, configure both `DATABASE_URL` (Supabas
 
 Approved plans are appended to the `workforce:approved-tasks` stream and consumed by a Redis consumer group. Pending entries can be reclaimed after the configured idle interval (`WORKFORCE_QUEUE_CLAIM_IDLE_MS`, default 15 minutes); the idle-reclaim scan interval is controlled by `WORKFORCE_QUEUE_CLAIM_SCAN_SECONDS` (default 60 seconds). The worker acknowledges a message only after the task reaches a terminal state. Repeated delivery failures are capped and moved to the `workforce:dead-tasks` dead-letter stream.
 
-The current preview runs one queue consumer inside the FastAPI service. This demonstrates durable queueing and process-restart reclamation without requiring a separate paid worker service. The default 15-minute idle threshold avoids reclaiming ordinary long-running jobs too early; jobs lasting beyond the threshold still need a heartbeat extension before horizontal scaling. Do not scale the API horizontally yet: multi-instance execution needs distributed job leases/heartbeats, worker concurrency coordination, and duplicate-execution protection. The existing provider router remains separately rate-limited; a Redis-backed shared quota counter is not yet implemented.
+The current preview runs one queue consumer inside the FastAPI service. The task SSE endpoint reads the same API process task state and emits event/status changes; it is not yet a cross-process Redis Pub/Sub fanout. This demonstrates durable queueing and process-restart reclamation without requiring a separate paid worker service. The default 15-minute idle threshold avoids reclaiming ordinary long-running jobs too early; jobs lasting beyond the threshold still need a heartbeat extension before horizontal scaling. Do not scale the API horizontally yet: multi-instance execution needs distributed job leases/heartbeats, worker concurrency coordination, and duplicate-execution protection. The existing provider router remains separately rate-limited; a Redis-backed shared quota counter is not yet implemented.
 
 Upstash Redis Free currently lists 500,000 commands/month, 256 MB data, and 10 GB monthly bandwidth. The worker uses a 30-second blocking XREADGROUP call while idle and scans for stale jobs once per minute by default, roughly 130,000 idle commands/month before task traffic. XADD/XPENDING/XAUTOCLAIM/XACK/XDEL operations add to that usage; monitor actual usage in the Upstash console. https://upstash.com/pricing/redis
 
