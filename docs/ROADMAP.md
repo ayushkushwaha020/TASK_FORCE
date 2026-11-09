@@ -35,12 +35,13 @@
 - [x] Mark interrupted in-process jobs as failed with an explicit recovery event
 - [ ] Provision Supabase Free project and configure the Render backend connection (blocked by account approval/login)
 - [ ] Apply migration and verify real Supabase create/read/update/restart behavior
-- [ ] Durable Redis worker/job queue and event fanout (next V3 slice)
+- [x] Redis Streams durable queue, consumer group, bounded delivery attempts, dead-letter stream, and stale-job reclamation (single API worker preview)
+- [ ] Multi-instance worker leases/heartbeats and event fanout (next V3 slice)
 - [ ] Permission-scoped browser/search tools
 - [ ] Isolated code runner
 - [ ] File ingestion and document generation
 - [ ] Approval queue and audit trail
-- [ ] Redis job/event queue and durable worker execution
+- [ ] Redis job/event queue across independent worker replicas and event fanout
 - [ ] User identities, quotas, and abuse protection
 - [ ] Cost and token budgets per task/team
 - [ ] Multi-provider adapter registry
