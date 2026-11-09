@@ -16,12 +16,12 @@ A multi-agent AI workforce platform that assembles specialists, coordinates thei
 - Login-free preview; optional persistent accounts are a later milestone.
 
 ## Current milestone — V3 Persistence Foundation
-- Mascot-driven robot floor with the supplied 3D characters and state-based animation (idle, active work, review, success, and recovery).
-- SQLAlchemy task snapshot persistence for PostgreSQL or SQLite when `DATABASE_URL` is configured.
+- Four original role-based 3D robots (Scout, Forge, Orbit, Sentinel) with state-based animations for idle, work, review, success, and recovery.
+- SQLAlchemy task snapshot persistence using Supabase Postgres or SQLite when `DATABASE_URL` is configured.
 - API restart restores task history and explicitly marks interrupted in-process jobs as failed.
 - V2 approval-gated execution, specialist collaboration, provider routing, bounded research, independent QA, and exports remain the feature baseline.
 
-Configure `DATABASE_URL` in the backend environment to enable durable task history. PostgreSQL is recommended for hosting; SQLite is supported locally. The V3 database layer does not yet provide a durable background queue or automatic task resumption.
+Configure `DATABASE_URL` in the Render backend Environment using the Supabase Session Pooler PostgreSQL URI (port 5432). The backend uses a private schema with RLS; SQLite is supported locally. The V3 database layer does not yet provide a durable background queue or automatic task resumption.
 
 ## V2 Agent Execution Preview + Provider Router (foundation)
 - Provider-backed planning and approval-gated specialist execution.
