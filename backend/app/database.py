@@ -25,7 +25,8 @@ def normalize_database_url(database_url: str) -> str:
             query.setdefault("ssl", sslmode or "require")
             # Supabase shared transaction pooler does not support prepared statements.
             if parsed.port == 6543:
-                query.setdefault("statement_cache_size", "0")
+                # SQLAlchemy's asyncpg dialect and asyncpg's own cache are separate.
+                query["prepared_statement_cache_size"] = "0"
         parsed = parsed.set(query=query)
     return parsed.render_as_string(hide_password=False)
 
@@ -44,8 +45,12 @@ class PersistentTaskRepository:
         )
         engine_options: dict[str, Any] = {"pool_pre_ping": True}
         if self.is_postgres:
-            # Keep a small app-side pool for Supabase Free/Nano compute.
+            # Keep a small app-side pool for Supabase Free compute.
             engine_options.update(pool_size=3, max_overflow=1, pool_timeout=15)
+            parsed = make_url(normalized)
+            if parsed.port == 6543:
+                # The shared transaction pooler does not support prepared statements.
+                engine_options["connect_args"] = {"statement_cache_size": 0}
         self.engine = create_async_engine(normalized, **engine_options)
         self.schema = "workforce_private" if self.is_postgres else None
         self.metadata = MetaData()
