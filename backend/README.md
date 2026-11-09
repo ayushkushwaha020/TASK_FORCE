@@ -14,6 +14,7 @@ uvicorn app.main:app --reload --port 8000
 ## API
 - `GET /health` — health check and API version.
 - `GET /api/config/status` — provider names, protocols, models, local budget usage, and status; never returns secrets.
+- `POST /api/providers/test` — user-triggered, one-request connectivity test per configured provider; reports status/latency without returning credentials.
 - `POST /api/tasks/plan` — create a proposed team plan. JSON: `{"instruction":"..." }`.
 - `GET /api/tasks/{task_id}` — poll task state, events, shared memory, messages, QA, and deliverable.
 - `POST /api/tasks/{task_id}/approval` — JSON `{"decision":"approve"}` or `{"decision":"reject","reason":"..." }`.
