@@ -16,6 +16,7 @@ type MemoryItem = { id: string; timestamp: string; source_agent: string; title: 
 type AgentMessage = { id: string; timestamp: string; from_agent: string; to_agent: string; kind: string; content: string };
 type QaFeedback = { decision?: string; summary?: string; issues?: string[]; revision_instructions?: string; affected_agents?: string[] };
 type ProviderInfo = { name: string; model: string; protocol: string; max_requests_per_hour: number | null; requests_this_hour: number; cooling_down: boolean };
+type ProviderTest = { name: string; protocol: string; model: string; status: "connected" | "failed" | "skipped"; latency_ms: number | null; message: string };
 type TaskPlan = {
   task_id: string; instruction: string; title: string; category: string;
   execution_mode: "demo" | "provider_planned"; notice: string;
@@ -74,6 +75,10 @@ export default function App() {
   const [fallbackConfigured, setFallbackConfigured] = useState(false);
   const [providerDetails, setProviderDetails] = useState<ProviderInfo[]>([]);
   const [configurationError, setConfigurationError] = useState<string | null>(null);
+  const [providerTests, setProviderTests] = useState<ProviderTest[]>([]);
+  const [providerTestedAt, setProviderTestedAt] = useState<string | null>(null);
+  const [testingProviders, setTestingProviders] = useState(false);
+  const [providerTestError, setProviderTestError] = useState("");
 
   useEffect(() => {
     fetch(API_BASE + "/api/config/status")
@@ -107,6 +112,22 @@ export default function App() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [taskId, executionStatus]);
 
+  async function testProviderConnections() {
+    if (testingProviders || providerDetails.length === 0) return;
+    setTestingProviders(true);
+    setProviderTestError("");
+    try {
+      const response = await fetch(API_BASE + "/api/providers/test", { method: "POST" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || "Provider test failed (" + response.status + ")");
+      setProviderTests(Array.isArray(payload.results) ? payload.results as ProviderTest[] : []);
+      setProviderTestedAt(payload.tested_at || new Date().toISOString());
+    } catch (err) {
+      setProviderTestError(err instanceof Error ? err.message : "Unable to test providers.");
+    } finally {
+      setTestingProviders(false);
+    }
+  }
   async function submitTask(event?: FormEvent) {
     event?.preventDefault();
     if (!prompt.trim() || loading) return;
@@ -272,7 +293,7 @@ export default function App() {
         )}
 
         {view === "settings" && (
-          <div className="settings-view"><div className="eyebrow"><Settings2 size={14} /> CONFIGURATION</div><h1>Provider <span>settings</span></h1><p className="settings-intro">Provider credentials stay on the backend. This public browser interface never receives or stores API keys.</p><div className="settings-card"><div className="settings-card-head"><div className="provider-icon"><Zap size={20} /></div><div><b>Multi-provider router</b><small>Priority routing · local request budgets · bounded failover</small></div><span className={providerConfigured ? "connected-tag" : "pending-tag"}>{providerConfigured ? "Configured" : "Not configured"}</span></div><div className="settings-detail"><div><span>Configured endpoints</span><b>{providerConfigured === null ? "Backend not reachable" : providerDetails.length ? String(providerDetails.length) + " provider(s)" : "Demo planning mode"}</b></div><div><span>Fallback model</span><b>{fallbackConfigured ? "Configured" : "Not configured"}</b></div><div><span>Credential storage</span><b>Backend environment only</b></div></div>{configurationError && <div className="error-banner">Provider configuration issue: {configurationError}</div>}<div className="settings-help">Configure multiple endpoints using AI_PROVIDERS_JSON in your Render backend environment. Each entry needs name, protocol, base_url, api_key, and model. Supported protocols: openai_compatible, gemini_generate_content, and anthropic_messages. Optional fields include priority, max_requests_per_hour, max_output_tokens, fallback_model, and api_version. The legacy AI_API_KEY, AI_PROVIDER_PROTOCOL, AI_API_BASE_URL, and AI_MODEL variables are also supported. Save the variables in Render, wait for redeployment, then refresh and create a fresh mission. Never paste API keys into chat or commit them to GitHub.</div>{providerDetails.length > 0 && <div className="provider-list">{providerDetails.map((provider) => <div className="provider-row" key={provider.name}><div><b>{provider.name}</b><small>{provider.model} · {provider.protocol.replaceAll("_", " ")}</small></div><span>{provider.max_requests_per_hour ? provider.requests_this_hour + " / " + provider.max_requests_per_hour + " calls this hour" : "Provider-managed quota"}</span><i className={provider.cooling_down ? "cooldown-indicator" : "ready-indicator"} /></div>)}</div>}</div><div className="settings-card settings-security"><div className="settings-card-head"><div className="provider-icon"><ShieldCheck size={20} /></div><div><b>Execution and privacy boundaries</b><small>V2 preview guardrails</small></div></div><ul><li>Human approval is required before specialist execution.</li><li>API keys are read only by the backend.</li><li>Only up to eight specialists run in parallel in this preview.</li><li>QA can reject the draft and request one bounded revision pass.</li><li>Tasks are held in process memory and may be lost after a backend restart.</li><li>Agents do not yet have website, filesystem, or terminal tools.</li></ul></div></div>
+          <div className="settings-view"><div className="eyebrow"><Settings2 size={14} /> CONFIGURATION</div><h1>Provider <span>settings</span></h1><p className="settings-intro">Provider credentials stay on the backend. This public browser interface never receives or stores API keys.</p><div className="settings-card"><div className="settings-card-head"><div className="provider-icon"><Zap size={20} /></div><div><b>Multi-provider router</b><small>Priority routing · local request budgets · bounded failover</small></div><span className={providerConfigured ? "connected-tag" : "pending-tag"}>{providerConfigured ? "Configured" : "Not configured"}</span></div><div className="settings-detail"><div><span>Configured endpoints</span><b>{providerConfigured === null ? "Backend not reachable" : providerDetails.length ? String(providerDetails.length) + " provider(s)" : "Demo planning mode"}</b></div><div><span>Fallback model</span><b>{fallbackConfigured ? "Configured" : "Not configured"}</b></div><div><span>Credential storage</span><b>Backend environment only</b></div></div>{configurationError && <div className="error-banner">Provider configuration issue: {configurationError}</div>}<div className="settings-help">Configure multiple endpoints using AI_PROVIDERS_JSON in your Render backend environment. Each entry needs name, protocol, base_url, api_key, and model. Supported protocols: openai_compatible, gemini_generate_content, and anthropic_messages. Optional fields include priority, max_requests_per_hour, max_output_tokens, max_output_field, fallback_model, and api_version. The legacy AI_API_KEY, AI_PROVIDER_PROTOCOL, AI_API_BASE_URL, and AI_MODEL variables are also supported. Save the variables in Render, wait for redeployment, then refresh and create a fresh mission. Never paste API keys into chat or commit them to GitHub.</div><div className="provider-test-toolbar"><div><b>Test your configured endpoints</b><small>Each click sends one short test prompt per provider and consumes that provider's request quota.</small></div><button className="secondary-button" onClick={testProviderConnections} disabled={testingProviders || providerDetails.length === 0}>{testingProviders ? <LoaderCircle className="spin" size={15} /> : <Zap size={15} />} {testingProviders ? "Testing..." : "Test connections"}</button></div>{providerTestError && <div className="error-banner">{providerTestError}</div>}{providerTestedAt && <div className="test-timestamp">Last tested: {timestamp(providerTestedAt)}</div>}{providerDetails.length > 0 && <div className="provider-list">{providerDetails.map((provider) => { const result = providerTests.find((item) => item.name === provider.name); return <div className="provider-row" key={provider.name}><div><b>{provider.name}</b><small>{provider.model} · {provider.protocol.replaceAll("_", " ")}</small></div><span>{result ? (result.status.toUpperCase() + (result.latency_ms === null ? "" : " · " + result.latency_ms + " ms")) : provider.max_requests_per_hour ? provider.requests_this_hour + " / " + provider.max_requests_per_hour + " calls this hour" : "Provider-managed quota"}</span><i className={result ? "provider-test-" + result.status : provider.cooling_down ? "cooldown-indicator" : "ready-indicator"} /></div>; })}</div>}</div><div className="settings-card settings-security"><div className="settings-card-head"><div className="provider-icon"><ShieldCheck size={20} /></div><div><b>Execution and privacy boundaries</b><small>V2 preview guardrails</small></div></div><ul><li>Human approval is required before specialist execution.</li><li>API keys are read only by the backend.</li><li>Only up to eight specialists run in parallel in this preview.</li><li>QA can reject the draft and request one bounded revision pass.</li><li>Tasks are held in process memory and may be lost after a backend restart.</li><li>Agents do not yet have website, filesystem, or terminal tools.</li></ul></div></div>
         )}
       </section>
 
