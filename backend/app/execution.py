@@ -141,7 +141,7 @@ async def _compile_deliverable(task_id: str, task: PlanResponse, results: list[d
         f"## {item['agent']['name']} ({item['agent'].get('role', 'Specialist')})\n{item['output'][:5000]}"
         for item in results if item.get("output")
     )
-    source_register = "\\n".join(
+    source_register = "\n".join(
         f"[{source.source_id}] {source.title} — {source.url}"
         for source in task.research_sources
     ) or "No live web sources were collected."
@@ -179,6 +179,7 @@ async def _qa_review(task_id: str, task: PlanResponse, deliverable: str, discuss
     )
     user = (
         f"ORIGINAL USER MISSION:\n{task.instruction}\n\nTEAM REVIEW NOTES:\n{discussion[:5000]}"
+        f"\n\nAVAILABLE SOURCE IDS:\n{source_register}"
         f"\n\nDRAFT DELIVERABLE:\n{deliverable[:20000]}"
     )
     async with _provider_semaphore:
@@ -194,7 +195,7 @@ async def _qa_review(task_id: str, task: PlanResponse, deliverable: str, discuss
     verdict["issues"] = [str(issue)[:1000] for issue in issues[:12]] if isinstance(issues, list) else [str(issues)[:1000]]
     if task.category == "research" and task.research_sources:
         valid_ids = {source.source_id for source in task.research_sources}
-        cited_ids = set(re.findall(r"\[(S\\d+)\]", deliverable))
+        cited_ids = set(re.findall(r"\[(S\d+)\]", deliverable))
         invalid_ids = cited_ids - valid_ids
         if not cited_ids or invalid_ids:
             verdict["decision"] = "revise"
