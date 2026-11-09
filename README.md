@@ -21,7 +21,7 @@ A multi-agent AI workforce platform that assembles specialists, coordinates thei
 - API restart restores task history and explicitly marks interrupted in-process jobs as failed.
 - V2 approval-gated execution, specialist collaboration, provider routing, bounded research, independent QA, and exports remain the feature baseline.
 
-Configure `DATABASE_URL` in the Render backend Environment using the Supabase Session Pooler PostgreSQL URI (port 5432). The backend uses a private schema with RLS; SQLite is supported locally. The V3 database layer does not yet provide a durable background queue or automatic task resumption.
+Configure `DATABASE_URL` in the Render backend Environment using the Supabase Transaction Pooler PostgreSQL URI (port 6543). The backend uses a private schema with RLS; SQLite is supported locally. The V3 database layer does not yet provide a durable background queue or automatic task resumption.
 
 ## V2 Agent Execution Preview + Provider Router (foundation)
 - Provider-backed planning and approval-gated specialist execution.
