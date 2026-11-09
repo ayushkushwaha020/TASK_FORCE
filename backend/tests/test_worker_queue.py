@@ -11,6 +11,8 @@ class FakeRedis:
     def __init__(self, existing_group=False, delivery_count=1):
         self.existing_group = existing_group
         self.delivery_count = delivery_count
+        self.claim_next_id = "0-0"
+        self.claim_starts = []
         self.groups = []
         self.entries = []
         self.acks = []
@@ -45,7 +47,8 @@ class FakeRedis:
         return 1
 
     async def xautoclaim(self, *args, **kwargs):
-        return ("0-0", [], [])
+        self.claim_starts.append(kwargs.get("start_id"))
+        return (self.claim_next_id, self.pending if hasattr(self, "pending") else [], [])
 
     async def xreadgroup(self, *args, **kwargs):
         return []
@@ -122,6 +125,15 @@ class RedisQueueUnitTests(unittest.IsolatedAsyncioTestCase):
         fake_store.update.assert_awaited_once_with("task-123", execution_status="failed", qa_status="rejected")
         self.assertEqual(redis.dead_letters[0]["task_id"], "task-123")
         self.assertEqual(redis.acks, ["1000-0"])
+
+    async def test_stale_claim_scan_advances_cursor(self):
+        redis = FakeRedis()
+        redis.claim_next_id = "2000-0"
+        queue = RedisStreamTaskQueue(redis_client=redis)
+        await queue._claim_stale()
+        self.assertEqual(queue._claim_cursor, "2000-0")
+        await queue._claim_stale()
+        self.assertEqual(redis.claim_starts, ["0-0", "2000-0"])
 
     async def test_status_reports_stream_and_pending_counts(self):
         redis = FakeRedis()
