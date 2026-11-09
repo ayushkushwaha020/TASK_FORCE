@@ -20,7 +20,7 @@
 - [x] Bounded retry, optional fallback model, and one workstream reassignment
 - [x] Frontend polling, activity timeline, shared-memory feed, and QA view
 - [ ] Durable task persistence and background worker queue
-- [ ] Browser/search integration with source capture
+- [x] Capped Tavily search for research tasks with URL/snippet source capture\n- [x] Source-ID citations and independent QA integrity check\n- [x] Markdown download and browser print-to-PDF export\n- [ ] General browser navigation/page extraction
 - [ ] Sandboxed code execution and deterministic test evidence
 - [ ] Human approval queue for external/destructive actions
 - [ ] Multi-provider quota-aware router
