@@ -53,8 +53,6 @@ class RedisStreamTaskQueue:
         return await self.redis.xadd(
             STREAM_NAME,
             {"task_id": task_id, "enqueued_by": "approval_api"},
-            maxlen=MAX_STREAM_LENGTH,
-            approximate=True,
         )
 
     async def _delivery_count(self, message_id: str) -> int:
@@ -68,6 +66,12 @@ class RedisStreamTaskQueue:
 
     async def _ack(self, message_id: str) -> None:
         await self.redis.xack(STREAM_NAME, CONSUMER_GROUP, message_id)
+        # Keep the audit in Postgres; delete the acknowledged queue entry so the
+        # primary stream stays small without trimming any unacknowledged jobs.
+        try:
+            await self.redis.xdel(STREAM_NAME, message_id)
+        except Exception:
+            logger.warning("Could not delete acknowledged queue entry %s.", message_id)
 
     async def _dead_letter(self, message_id: str, task_id: str, reason: str) -> None:
         await self.redis.xadd(
