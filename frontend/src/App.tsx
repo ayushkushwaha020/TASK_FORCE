@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   Activity, ArrowRight, Bot, CheckCircle2, ChevronDown, CircleHelp,
-  Clock3, Code2, FileText, LayoutDashboard, LoaderCircle, LockKeyhole,
+  Code2, FileText, LayoutDashboard, LoaderCircle, LockKeyhole,
   MessageSquare, Plus, Radio, Search, Send, Settings2, ShieldCheck,
   Sparkles, Users, Workflow, Zap,
 } from "lucide-react";
