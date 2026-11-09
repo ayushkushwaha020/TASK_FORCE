@@ -112,10 +112,19 @@ Without configured providers, the planner returns a clearly labelled local demo 
 
 Agents do not yet have browser, filesystem, terminal, or external-action tools. They must not claim to have run code, browsed websites, contacted anyone, or verified external facts. AI QA is not a substitute for deterministic tests or human review. Model-generated content and shared memory are treated as untrusted data, not authority to change system safeguards.
 
-## Durable task storage (V3 foundation)
-Set `DATABASE_URL` in the backend environment to persist task snapshots across API restarts. PostgreSQL is recommended for hosted use; SQLite is supported for local development. Accepted URL forms include `postgresql://...` and `sqlite:///...`; the backend selects async drivers (`asyncpg` / `aiosqlite`).
+## Supabase Postgres task storage (V3)
 
-The `workforce_tasks` table stores the complete task snapshot, including agents, events, shared memory, agent messages, research sources, QA state, and the deliverable. The API restores these records on startup. Tasks that were queued or executing during a restart are marked `failed` and receive an `execution_interrupted` event: the current in-process background runner cannot safely resume them. V2 in-memory records are not automatically backfilled into a database. With no `DATABASE_URL`, the app retains memory mode and its original restart-loss limitation.
+The recommended hosted database is **Supabase Postgres**. Set the connection URI in the backend-only `DATABASE_URL` environment variable. Do not put the URI in the frontend or commit it to GitHub.
+
+**Render connection mode:** Render services use IPv4 networking. In Supabase Dashboard choose **Connect → Session pooler** and copy its PostgreSQL URI (usually port `5432`). The adapter also supports the transaction pooler (port `6543`) and disables asyncpg prepared-statement caching for that mode. Supabase SSL is required automatically for Supabase pooler hosts.
+
+On startup, SQLAlchemy creates the `workforce_private.workforce_tasks` table. The app persists the entire task snapshot: agents, workstreams, events, messages, shared memory, research sources, QA state, and deliverables. The schema is deliberately separate from the exposed `public` API schema, and the adapter enables row-level security and revokes access from `PUBLIC`, `anon`, and `authenticated`. Only the backend's private database connection should access these records.
+
+For local development, SQLite remains supported with `DATABASE_URL=sqlite:///./workforce.db`. If no URL is configured, the app falls back to process memory and task history is cleared on restart.
+
+The current runner still uses FastAPI background tasks. If the API restarts during execution, the task snapshot is restored and marked failed with an `execution_interrupted` event; the job is not automatically resumed. Existing in-memory V2 tasks are not backfilled into Supabase.
+
+Set `DATABASE_URL` in Render Dashboard → backend service → Environment. Never paste the database password into chat, GitHub, or browser code.
 
 ## Preview limitations
 - With no `DATABASE_URL`, tasks and shared memory are process-local and clear after a service restart.
