@@ -123,7 +123,7 @@ On startup, SQLAlchemy creates the `workforce_private.workforce_tasks` table. Th
 
 For local development, SQLite remains supported with `DATABASE_URL=sqlite:///./workforce.db`. If no URL is configured, the app falls back to process memory and task history is cleared on restart.
 
-The current runner still uses FastAPI background tasks. If the API restarts during execution, the task snapshot is restored and marked failed with an `execution_interrupted` event; the job is not automatically resumed. Existing in-memory V2 tasks are not backfilled into Supabase.
+When Redis queue mode is not configured, the runner uses FastAPI background tasks; an API restart restores the task snapshot but marks in-flight work failed with an `execution_interrupted` event. When both Supabase `DATABASE_URL` and Redis `REDIS_URL` are configured, approved jobs are requeued through Redis Streams and reclaimed after the idle threshold. Existing in-memory V2 tasks are not backfilled into Supabase.
 
 Set `DATABASE_URL` in Render Dashboard → backend service → Environment. Never paste the database password into chat, GitHub, or browser code.
 
