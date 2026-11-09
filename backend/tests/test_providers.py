@@ -56,6 +56,26 @@ class ProviderRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ["primary", "secondary"])
         self.assertGreater(providers._provider_cooldowns["primary"], time.monotonic())
 
+
+    async def test_retry_attempts_consume_the_same_provider_budget(self):
+        calls = []
+
+        async def fake_call(provider, messages, *, temperature, json_mode, model):
+            calls.append(provider["name"])
+            if provider["name"] == "primary":
+                request = httpx.Request("POST", "https://primary.example/v1/chat/completions")
+                response = httpx.Response(503, request=request)
+                raise httpx.HTTPStatusError("upstream unavailable", request=request, response=response)
+            return "secondary provider response"
+
+        with patch.dict("os.environ", {"AI_PROVIDERS_JSON": provider_config(), "AI_API_KEY": "", "AI_MODEL": ""}), patch("app.providers._call_model", new=AsyncMock(side_effect=fake_call)):
+            result = await providers.request_completion([{"role": "user", "content": "hello"}])
+
+        self.assertEqual(result, "secondary provider response")
+        # Primary's local cap is two in the fixture, so the retry fits within its budget.
+        self.assertEqual(calls, ["primary", "primary", "secondary"])
+        self.assertEqual(len(providers._provider_usage["primary"]), 2)
+
     async def test_legacy_single_endpoint_configuration_remains_supported(self):
         with patch.dict("os.environ", {"AI_PROVIDERS_JSON": "", "AI_API_KEY": "legacy-secret", "AI_API_BASE_URL": "https://legacy.example/v1", "AI_MODEL": "legacy-model"}):
             status = providers.provider_status()
