@@ -28,9 +28,13 @@
 - [x] Multi-provider quota-aware router
 
 ## V3 — Persistence and production controls (in progress)
-- [x] SQLAlchemy-backed Supabase Postgres persistence with SSL, pooler support, private schema, and row-level security
+- [x] SQLAlchemy-backed Supabase Postgres adapter with SSL, pooler support, private schema, and row-level security
+- [x] Unit tests for Supabase pooler URL normalization, SQLite URL normalization, and private schema selection
+- [x] Versioned SQL migration prepared for Supabase; live application waits for project provisioning
 - [x] Restore task history, shared memory, messages, research sources, events, and deliverables after API restart
 - [x] Mark interrupted in-process jobs as failed with an explicit recovery event
+- [ ] Provision Supabase Free project and configure the Render backend connection (blocked by account approval/login)
+- [ ] Apply migration and verify real Supabase create/read/update/restart behavior
 - [ ] Durable Redis worker/job queue and event fanout (next V3 slice)
 - [ ] Permission-scoped browser/search tools
 - [ ] Isolated code runner
