@@ -192,7 +192,7 @@ class ExecutionPipelineTests(unittest.IsolatedAsyncioTestCase):
         assert result is not None
         self.assertEqual(result.execution_status, "revision_required")
         self.assertEqual(result.qa_status, "rejected")
-        self.assertIn("source-citation integrity check", result.qa_feedback or "")
+        self.assertIn("source evidence and disclosure integrity check", result.qa_feedback or "")
 
 
     async def test_demo_plan_cannot_be_executed_as_live_agents(self):
