@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
-  Activity, ArrowRight, Bot, CheckCircle2, ChevronDown, CircleHelp,
+  Activity, ArrowRight, CheckCircle2, ChevronDown, CircleHelp,
   Code2, FileText, LayoutDashboard, LoaderCircle, LockKeyhole,
   MessageSquare, Plus, Radio, Search, Send, Settings2, ShieldCheck,
   Sparkles, Users, Workflow, Zap,
@@ -39,10 +39,9 @@ const starterPrompts = [
 ];
 
 function Robot({ agent, index }: { agent?: Agent; index: number }) {
-  const emoji = agent?.emoji || ["🤖", "🧑‍🚀", "🦾", "🤖"][index % 4];
   const state = agent?.status || "idle";
   return <div className={"robot robot-" + (index % 4) + " robot-state-" + state} title={agent ? agent.name + " · " + agent.role + " · " + state : "Workforce assistant"}>
-    <span className="robot-face">{emoji}</span>
+    <img className="robot-mascot" src="/mascots/robot-smile.png" alt={agent?.name || "Workforce mascot"} />
     <span className="robot-shadow" />
   </div>;
 }
@@ -207,7 +206,7 @@ export default function App() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand-lockup">
-          <div className="brand-mark"><Bot size={23} /></div>
+          <div className="brand-mark brand-mascot-mark"><img src="/mascots/robot-smile.png" alt="Workforce mascot" /></div>
           <div><strong>workforce<span>.ai</span></strong><small>YOUR AI OPERATIONS TEAM</small></div>
         </div>
         <button className={"nav-item " + (view === "chat" ? "selected" : "")} onClick={() => setView("chat")}><MessageSquare size={18} /> Command Center</button>
@@ -295,7 +294,7 @@ export default function App() {
               </section>
 
               <div className="workspace-columns">
-                <section className="panel"><div className="panel-heading"><h3><Users size={17} /> Your specialist team</h3><span>{plan.agents.length} agents</span></div><div className="agent-list">{plan.agents.map((agent) => <div className="agent-row" key={agent.id}><div className="agent-avatar">{agent.emoji || "🤖"}</div><div className="agent-info"><b>{agent.name}</b><span>{agent.role} · {agent.personality}</span><small>{agent.task}</small></div><span className={"agent-status status-" + agent.status}>{agent.status.replaceAll("_", " ")}</span></div>)}</div></section>
+                <section className="panel"><div className="panel-heading"><h3><Users size={17} /> Your specialist team</h3><span>{plan.agents.length} agents</span></div><div className="agent-list">{plan.agents.map((agent) => <div className="agent-row" key={agent.id}><div className="agent-avatar"><img className="agent-mascot-avatar" src="/mascots/robot-smile.png" alt="" /></div><div className="agent-info"><b>{agent.name}</b><span>{agent.role} · {agent.personality}</span><small>{agent.task}</small></div><span className={"agent-status status-" + agent.status}>{agent.status.replaceAll("_", " ")}</span></div>)}</div></section>
                 <section className="panel"><div className="panel-heading"><h3><Workflow size={17} /> Workstreams</h3><span>{plan.subtasks.length} planned</span></div><div className="subtask-list">{plan.subtasks.map((task, i) => <div className="subtask-row" key={task.id}><div className="step-number">{String(i + 1).padStart(2, "0")}</div><div><b>{task.title}</b><small>Owner: {task.owner}</small></div><span className={"planned-tag status-" + task.status}>{task.status.replaceAll("_", " ")}</span></div>)}</div><div className={"qa-card qa-" + plan.qa_status}><ShieldCheck size={19} /><div><b>Independent QA · {plan.qa_status.replaceAll("_", " ")}</b><small>{plan.qa_status === "passed" ? "The reviewer approved the deliverable." : plan.qa_status === "rejected" ? "The reviewer rejected the draft or the run stopped before review." : "The independent reviewer will inspect the integrated work after the specialists report."}</small></div></div></section>
               </div>
 
