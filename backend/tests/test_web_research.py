@@ -71,7 +71,8 @@ class TavilyResearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["credits"], 3)
         self.assertEqual([source.source_id for source in result["sources"]], ["S1", "S2"])
         self.assertEqual(len(result["sources"]), 2)
-        self.assertNotIn("tavily-secret", json.dumps(result))
+        safe_result = {**result, "sources": [source.model_dump() for source in result["sources"]]}
+        self.assertNotIn("tavily-secret", json.dumps(safe_result))
         self.assertEqual(result["sources"][0].url, "https://example.org/research-methods")
 
     async def test_search_query_count_is_capped_at_four(self):
