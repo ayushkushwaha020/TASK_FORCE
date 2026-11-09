@@ -34,8 +34,11 @@ def _provider_registry() -> list[dict[str, Any]]:
                 raise ValueError(f"Provider entry {index + 1} needs name, api_key, base_url, and model.")
             cap = item.get("max_requests_per_hour")
             max_output_tokens = item.get("max_output_tokens", 4096)
+            max_output_field = str(item.get("max_output_field", "max_tokens"))
             if not isinstance(max_output_tokens, int) or max_output_tokens < 256 or max_output_tokens > 65536:
                 raise ValueError(f"Provider {name} max_output_tokens must be between 256 and 65536.")
+            if max_output_field not in ("max_tokens", "max_completion_tokens"):
+                raise ValueError(f"Provider {name} max_output_field must be max_tokens or max_completion_tokens.")
             if cap is not None and (not isinstance(cap, int) or cap < 1 or cap > 10000):
                 raise ValueError(f"Provider {name} max_requests_per_hour must be between 1 and 10000.")
             if not base_url.startswith(("https://", "http://")):
@@ -47,6 +50,7 @@ def _provider_registry() -> list[dict[str, Any]]:
                 "protocol": protocol,
                 "api_version": str(item.get("api_version", "2026-10-21")),
                 "max_output_tokens": max_output_tokens,
+                "max_output_field": max_output_field,
                 "fallback_model": str(item.get("fallback_model", "")).strip(),
                 "priority": int(item.get("priority", 100)),
                 "max_requests_per_hour": cap,
@@ -71,6 +75,7 @@ def _provider_registry() -> list[dict[str, Any]]:
             "protocol": protocol,
             "api_version": os.getenv("AI_API_VERSION", "2026-10-21"),
             "max_output_tokens": int(os.getenv("AI_MAX_OUTPUT_TOKENS", "4096")),
+            "max_output_field": os.getenv("AI_MAX_OUTPUT_FIELD", "max_tokens"),
             "fallback_model": os.getenv("AI_FALLBACK_MODEL", "").strip(),
             "priority": int(os.getenv("AI_PROVIDER_PRIORITY", "10")),
             "max_requests_per_hour": None,
@@ -143,6 +148,7 @@ async def _call_model(
 
     if protocol == "openai_compatible":
         body: dict[str, Any] = {"model": model, "temperature": temperature, "messages": messages}
+        body[provider.get("max_output_field", "max_tokens")] = provider.get("max_output_tokens", 4096)
         if json_mode:
             body["response_format"] = {"type": "json_object"}
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
