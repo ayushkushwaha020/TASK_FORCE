@@ -76,6 +76,73 @@ class ProviderRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ["primary", "primary", "secondary"])
         self.assertEqual(len(providers._provider_usage["primary"]), 2)
 
+
+    async def test_gemini_native_generate_content_adapter_maps_system_and_user_messages(self):
+        captured = []
+        payload = {"candidates": [{"content": {"parts": [{"text": "Gemini result"}]}}]}
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+            async def post(self, url, *, headers, json):
+                captured.append({"url": url, "headers": headers, "json": json})
+                return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+        provider = {
+            "name": "gemini", "protocol": "gemini_generate_content",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "api_key": "gemini-secret", "model": "gemini-test", "max_output_tokens": 1000,
+        }
+        with patch("app.providers.httpx.AsyncClient", FakeClient):
+            result = await providers._call_model(
+                provider,
+                [{"role": "system", "content": "You are a planner."}, {"role": "user", "content": "Make a plan."}],
+                temperature=0.2, json_mode=True, model="gemini-test",
+            )
+        self.assertEqual(result, "Gemini result")
+        self.assertEqual(captured[0]["url"], "https://generativelanguage.googleapis.com/v1beta/models/gemini-test:generateContent")
+        self.assertEqual(captured[0]["headers"]["x-goog-api-key"], "gemini-secret")
+        self.assertNotIn("Authorization", captured[0]["headers"])
+        self.assertEqual(captured[0]["json"]["systemInstruction"]["parts"][0]["text"], "You are a planner.")
+        self.assertEqual(captured[0]["json"]["generationConfig"]["responseMimeType"], "application/json")
+
+    async def test_anthropic_messages_adapter_maps_system_and_parses_text_blocks(self):
+        captured = []
+        payload = {"content": [{"type": "text", "text": "Claude result"}], "stop_reason": "end_turn"}
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+            async def post(self, url, *, headers, json):
+                captured.append({"url": url, "headers": headers, "json": json})
+                return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+        provider = {
+            "name": "anthropic", "protocol": "anthropic_messages",
+            "base_url": "https://api.anthropic.com", "api_key": "anthropic-secret",
+            "model": "claude-test", "api_version": "2026-10-21", "max_output_tokens": 1500,
+        }
+        with patch("app.providers.httpx.AsyncClient", FakeClient):
+            result = await providers._call_model(
+                provider,
+                [{"role": "system", "content": "You are a reviewer."}, {"role": "user", "content": "Review this draft."}],
+                temperature=0.1, json_mode=False, model="claude-test",
+            )
+        self.assertEqual(result, "Claude result")
+        self.assertEqual(captured[0]["url"], "https://api.anthropic.com/v1/messages")
+        self.assertEqual(captured[0]["headers"]["x-api-key"], "anthropic-secret")
+        self.assertEqual(captured[0]["headers"]["anthropic-version"], "2026-10-21")
+        self.assertEqual(captured[0]["json"]["system"], "You are a reviewer.")
+        self.assertEqual(captured[0]["json"]["max_tokens"], 1500)
+
     async def test_legacy_single_endpoint_configuration_remains_supported(self):
         with patch.dict("os.environ", {"AI_PROVIDERS_JSON": "", "AI_API_KEY": "legacy-secret", "AI_API_BASE_URL": "https://legacy.example/v1", "AI_MODEL": "legacy-model"}):
             status = providers.provider_status()
