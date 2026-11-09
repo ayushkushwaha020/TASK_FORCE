@@ -1,7 +1,7 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   Activity, ArrowRight, Bot, CheckCircle2, ChevronDown, CircleHelp,
-  Code2, FileText, LayoutDashboard, LoaderCircle, MessageSquare,
+  Code2, LayoutDashboard, LoaderCircle, MessageSquare,
   Plus, Search, Send, Settings2, ShieldCheck, Sparkles, Users,
   Workflow, Zap,
 } from "lucide-react";
@@ -51,7 +51,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [providerConfigured, setProviderConfigured] = useState<boolean | null>(null);
 
-  useMemo(() => {
+  useEffect(() => {
     fetch(`${API_BASE}/api/config/status`)
       .then((r) => r.ok ? r.json() : Promise.reject(new Error("Backend unavailable")))
       .then((data) => setProviderConfigured(Boolean(data.provider_configured)))
