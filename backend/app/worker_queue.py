@@ -24,6 +24,7 @@ CONSUMER_GROUP = os.getenv("WORKFORCE_TASK_GROUP", "workforce-workers")
 MAX_STREAM_LENGTH = 10_000
 MIN_IDLE_CLAIM_MS = max(60_000, int(os.getenv("WORKFORCE_QUEUE_CLAIM_IDLE_MS", "900000")))
 MAX_DELIVERIES = 3
+CLAIM_SCAN_INTERVAL_SECONDS = max(15, int(os.getenv("WORKFORCE_QUEUE_CLAIM_SCAN_SECONDS", "60")))
 TERMINAL_STATES = {"completed", "failed", "revision_required", "rejected", "cancelled"}
 
 
@@ -34,10 +35,11 @@ class RedisStreamTaskQueue:
             raise ValueError("REDIS_URL is required to enable the durable task queue.")
         self.redis = redis_client or Redis.from_url(
             url, encoding="utf-8", decode_responses=True,
-            socket_connect_timeout=5, socket_timeout=10,
+            socket_connect_timeout=5, socket_timeout=35,
             health_check_interval=30, retry_on_timeout=True,
         )
         self.consumer = f"{socket.gethostname()}-{uuid.uuid4().hex[:10]}"
+        self._last_claim_scan = 0.0
 
     async def initialize(self) -> None:
         await self.redis.ping()
@@ -140,7 +142,7 @@ class RedisStreamTaskQueue:
     async def _read_new(self) -> list[tuple[str, dict[str, Any]]]:
         batches = await self.redis.xreadgroup(
             CONSUMER_GROUP, self.consumer, {STREAM_NAME: ">"},
-            count=1, block=5000,
+            count=1, block=30000,
         )
         messages: list[tuple[str, dict[str, Any]]] = []
         for _stream, entries in batches or []:
@@ -151,7 +153,11 @@ class RedisStreamTaskQueue:
         logger.info("Workforce Redis Streams worker started as %s", self.consumer)
         while True:
             try:
-                messages = await self._claim_stale()
+                now = asyncio.get_running_loop().time()
+                messages: list[tuple[str, dict[str, Any]]] = []
+                if now - self._last_claim_scan >= CLAIM_SCAN_INTERVAL_SECONDS:
+                    messages = await self._claim_stale()
+                    self._last_claim_scan = now
                 if not messages:
                     messages = await self._read_new()
                 for message_id, fields in messages:
@@ -180,6 +186,8 @@ class RedisStreamTaskQueue:
             "consumer": self.consumer,
             "max_deliveries": MAX_DELIVERIES,
             "claim_idle_ms": MIN_IDLE_CLAIM_MS,
+            "claim_scan_interval_seconds": CLAIM_SCAN_INTERVAL_SECONDS,
+            "idle_read_block_ms": 30000,
         }
 
     async def close(self) -> None:
