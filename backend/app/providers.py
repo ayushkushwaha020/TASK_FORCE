@@ -248,6 +248,59 @@ async def _call_model(
     raise ValueError(f"Unsupported provider protocol: {protocol}")
 
 
+async def test_provider_connections() -> dict[str, Any]:
+    """Run one short, user-triggered request per configured provider."""
+    from datetime import datetime, timezone
+
+    try:
+        configured = _provider_registry()
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Provider configuration is invalid ({type(exc).__name__}).") from exc
+
+    async def test_one(provider: dict[str, Any]) -> dict[str, Any]:
+        name = provider["name"]
+        protocol = provider.get("protocol", "openai_compatible")
+        model = provider["model"]
+        if not _reserve_provider(provider):
+            return {"name": name, "protocol": protocol, "model": model, "status": "skipped", "latency_ms": None, "message": "Cooling down or local request budget reached."}
+        limited = {**provider, "max_output_tokens": 32}
+        started = time.perf_counter()
+        try:
+            async with asyncio.timeout(float(os.getenv("AI_REQUEST_TIMEOUT_SECONDS", "60")) + 2):
+                await _call_model(
+                    limited,
+                    [
+                        {"role": "system", "content": "You are checking provider connectivity. Reply with the exact word OK."},
+                        {"role": "user", "content": "Reply with OK only."},
+                    ],
+                    temperature=0.0, json_mode=False, model=model,
+                )
+            elapsed = round((time.perf_counter() - started) * 1000)
+            return {"name": name, "protocol": protocol, "model": model, "status": "connected", "latency_ms": elapsed, "message": "Provider returned a response."}
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status == 429:
+                _provider_cooldowns[name] = time.monotonic() + 60
+            label = "rate limited" if status == 429 else "request rejected"
+            return {"name": name, "protocol": protocol, "model": model, "status": "failed", "latency_ms": round((time.perf_counter() - started) * 1000), "message": f"HTTP {status}: {label}. Check the provider key, model ID, and account quota."}
+        except (httpx.TimeoutException, TimeoutError):
+            return {"name": name, "protocol": protocol, "model": model, "status": "failed", "latency_ms": None, "message": "Provider request timed out."}
+        except Exception as exc:
+            return {"name": name, "protocol": protocol, "model": model, "status": "failed", "latency_ms": None, "message": f"Connection test failed ({type(exc).__name__})."}
+
+    semaphore = asyncio.Semaphore(4)
+    async def bounded(provider: dict[str, Any]) -> dict[str, Any]:
+        async with semaphore:
+            return await test_one(provider)
+
+    results = await asyncio.gather(*(bounded(provider) for provider in configured))
+    return {
+        "tested_at": datetime.now(timezone.utc).isoformat(),
+        "provider_count": len(configured),
+        "results": results,
+        "credentials_exposed": False,
+    }
+
 async def request_completion(
     messages: list[dict[str, str]], *, temperature: float = 0.2, json_mode: bool = False
 ) -> str:
