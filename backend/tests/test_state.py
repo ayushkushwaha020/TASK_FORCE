@@ -68,7 +68,7 @@ class PersistentTaskStoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_redis_queue_requires_persistent_task_storage(self):
         with patch.dict("os.environ", {"REDIS_URL": "rediss://default:secret@example.upstash.io:6379"}):
             with self.assertRaises(RuntimeError):
-                TaskStore(None)
+                TaskStore("")
 
     async def test_waiting_for_approval_survives_restart_without_interruption(self):
         with tempfile.TemporaryDirectory() as directory:
