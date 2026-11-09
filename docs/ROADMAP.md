@@ -19,6 +19,7 @@
 - [x] One bounded revision cycle
 - [x] Bounded retry, optional fallback model, and one workstream reassignment
 - [x] Frontend polling, activity timeline, shared-memory feed, and QA view
+- [x] Server-Sent Events task stream with EventSource frontend updates and polling fallback (single API process)
 - [ ] Durable background worker queue and event fanout (V3)
 - [x] Capped Tavily search for research tasks with URL/snippet source capture
 - [x] Source-ID citations and independent QA integrity check
@@ -36,7 +37,7 @@
 - [ ] Provision Supabase Free project and configure the Render backend connection (blocked by account approval/login)
 - [ ] Apply migration and verify real Supabase create/read/update/restart behavior
 - [x] Redis Streams durable queue, consumer group, bounded delivery attempts, dead-letter stream, and stale-job reclamation (single API worker preview)
-- [ ] Multi-instance worker leases/heartbeats and event fanout (next V3 slice)
+- [ ] Multi-instance worker leases/heartbeats and cross-process Redis event fanout (next V3 slice)
 - [ ] Permission-scoped browser/search tools
 - [ ] Isolated code runner
 - [ ] File ingestion and document generation
