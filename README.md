@@ -51,7 +51,7 @@ uvicorn app.main:app --reload --port 8000
 Set `VITE_API_BASE_URL=http://localhost:8000` in `frontend/.env.local` if needed.
 
 ## AI provider configuration
-Copy `backend/.env.example` to `backend/.env`. Configure one endpoint with `AI_API_KEY`, `AI_MODEL`, and optionally `AI_API_BASE_URL` and `AI_FALLBACK_MODEL`, or several endpoints with server-side `AI_PROVIDERS_JSON` using `openai_compatible`, `gemini_generate_content`, or `anthropic_messages` protocols. Per-endpoint `priority`, optional `max_requests_per_hour`, and `fallback_model` are supported. Provider quotas still apply; local caps are a preview safeguard and do not represent remaining provider quota. Keep credentials server-side only. Never commit real keys. Native Gemini/Anthropic protocol adapters are future work.
+Copy `backend/.env.example` to `backend/.env`. Configure one endpoint with `AI_API_KEY`, `AI_MODEL`, and optionally `AI_API_BASE_URL` and `AI_FALLBACK_MODEL`, or several endpoints with server-side `AI_PROVIDERS_JSON` using `openai_compatible`, `gemini_generate_content`, or `anthropic_messages` protocols. Per-endpoint `priority`, optional `max_requests_per_hour`, and `fallback_model` are supported. Provider quotas still apply; local caps are a preview safeguard and do not represent remaining provider quota. Keep credentials server-side only. Never commit real keys. Add `TAVILY_API_KEY` in the backend environment for live research search; without it the report must disclose that no live web search was performed. Native Gemini/Anthropic protocol adapters are future work.
 
 Without an API key, the app can create clearly labelled demo plans but cannot start live specialist execution.
 
