@@ -32,6 +32,10 @@ def _provider_registry() -> list[dict[str, Any]]:
             cap = item.get("max_requests_per_hour")
             if cap is not None and (not isinstance(cap, int) or cap < 1 or cap > 10000):
                 raise ValueError(f"Provider {name} max_requests_per_hour must be between 1 and 10000.")
+            if not base_url.startswith(("https://", "http://")):
+                raise ValueError(f"Provider {name} base_url must use HTTP or HTTPS.")
+            if any(existing["name"] == name for existing in providers):
+                raise ValueError(f"Provider names must be unique; duplicate name: {name}.")
             providers.append({
                 "name": name, "api_key": api_key, "base_url": base_url, "model": model,
                 "fallback_model": str(item.get("fallback_model", "")).strip(),
@@ -118,6 +122,10 @@ async def _call_model(
         response = await client.post(url, headers=headers, json=body)
         # Some OpenAI-compatible endpoints do not implement response_format.
         if json_mode and response.status_code in (400, 422):
+            # Some compatible endpoints do not support response_format. Count this
+            # second underlying HTTP request against the same local provider budget.
+            if not _reserve_provider(provider):
+                response.raise_for_status()
             body.pop("response_format", None)
             response = await client.post(url, headers=headers, json=body)
         response.raise_for_status()
