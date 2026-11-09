@@ -54,6 +54,8 @@ Status key (not checklist items): VERIFIED = implemented and covered by automate
 - [ ] Verify live Render-to-Supabase connectivity, create/read/update persistence, and restart recovery.
 - [ ] Backfill any pre-existing in-memory tasks (not currently supported).
 - [x] Redis Streams queue with consumer group, pending-message reclamation, bounded delivery attempts, and dead-letter handling (single API worker).
+- [x] Provisioned the Upstash Free Redis database `autonomous-ai-workforce` in Singapore and verified Redis Streams consumer-group, enqueue, read, pending, acknowledge, and cleanup commands.
+- [x] Stored the Upstash TLS `REDIS_URL` as a secret environment variable on the existing Render backend service; the current service still runs V1, so V3 queue activation awaits the V3 deployment and Supabase `DATABASE_URL`.
 - [~] Interrupted jobs are returned to queued state when durable Redis queue mode is configured; live process-crash/reclaim test is not available without a configured Redis instance.
 - [ ] Multi-worker leases/heartbeats, cross-process Redis event fanout, and production deployment.
 - [ ] Server-Sent Events or WebSockets instead of polling.
