@@ -32,9 +32,9 @@ Configure `DATABASE_URL` in the Render backend Environment using the Supabase Tr
 - Parallel specialist outputs, shared memory, structured messages, and team deliberation.
 - Integrated draft deliverable and independent QA review.
 - One bounded QA revision round.
-- Live status polling, activity timeline, shared-memory feed, and QA report in the frontend.
+- Live Server-Sent Events updates with polling fallback, activity timeline, shared-memory feed, and QA report in the frontend.
 
-**Important boundaries:** agents currently produce and review model-generated text. They do not yet have browser, filesystem, terminal, or external-action tools. The platform must not claim that websites were browsed, code was executed, messages were sent, or external facts were verified. QA is an independent AI content review, not deterministic proof of correctness. Task snapshots are durable only when `DATABASE_URL` is configured. The current background runner still lives in the API process; jobs interrupted by restart are marked failed and require a new run.
+**Important boundaries:** agents currently produce and review model-generated text. They do not yet have browser, filesystem, terminal, or external-action tools. The platform must not claim that websites were browsed, code was executed, messages were sent, or external facts were verified. QA is an independent AI content review, not deterministic proof of correctness. Task snapshots are durable only when `DATABASE_URL` is configured. In Redis queue mode, a single consumer runs inside the API process; do not scale API replicas horizontally until leases, heartbeats, and duplicate-execution protection are added.
 
 ## Repository layout
 - `frontend/` — React, TypeScript, Vite.
