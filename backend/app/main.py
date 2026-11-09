@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .execution import execute_task
 from .orchestrator import create_plan
-from .providers import provider_is_configured, provider_status
+from .providers import provider_is_configured, provider_status, test_provider_connections
 from .schemas import ApprovalRequest, PlanRequest, PlanResponse
 from .state import TASKS
 
@@ -58,6 +58,14 @@ async def health():
 async def config_status():
     return provider_status()
 
+
+@app.post("/api/providers/test")
+async def test_providers(http_request: Request):
+    enforce_rate_limit(http_request, "provider connection tests", 5)
+    try:
+        return await test_provider_connections()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 @app.post("/api/tasks/plan", response_model=PlanResponse)
 async def plan_task(request: PlanRequest, http_request: Request):
