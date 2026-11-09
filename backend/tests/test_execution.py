@@ -87,6 +87,114 @@ class ExecutionPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.execution_status, "completed")
         self.assertTrue(any(event.kind == "revision_cycle_started" for event in result.events))
 
+
+    async def test_research_execution_collects_sources_and_preserves_citations(self):
+        from app.schemas import ResearchSource
+
+        plan = self.make_plan().model_copy(update={
+            "instruction": "Research evidence-based approaches to evaluate AI agent teams.",
+            "title": "AI agent evaluation research",
+            "category": "research",
+        })
+        await TASKS.create(plan)
+        await TASKS.update(plan.task_id, execution_status="queued", approval_status="approved")
+        source = ResearchSource(
+            source_id="S1",
+            query="AI agent evaluation methods",
+            title="A study of agent evaluation",
+            url="https://research.example.org/agent-evaluation",
+            snippet="The paper compares task completion, reliability and human review.",
+            score=0.92,
+        )
+
+        async def fake_research(instruction, subtask_titles):
+            return {
+                "status": "completed",
+                "notice": "Collected one source snippet from one bounded query.",
+                "sources": [source],
+                "credits": 1,
+                "errors": [],
+            }
+
+        async def fake_completion(messages, *, temperature=0.2, json_mode=False):
+            system = messages[0]["content"]
+            user = messages[1]["content"]
+            if "independent QA authority" in system:
+                self.assertIn("[S1]", user)
+                return json.dumps({
+                    "decision": "approve", "summary": "The report cites the available source.",
+                    "issues": [], "revision_instructions": "", "affected_agents": [],
+                })
+            if "facilitating a transparent" in system:
+                return "The team compared evaluation quality and reliability. Source [S1] provides a relevant study."
+            if "principal editor" in system:
+                self.assertIn("RETRIEVED WEB SOURCE REGISTER", user)
+                self.assertIn("https://research.example.org/agent-evaluation", user)
+                return "# AI Agent Evaluation\n\nThe cited study compares reliability and task completion [S1]."
+            self.assertIn("[S1]", user)
+            self.assertIn("research.example.org", user)
+            return "Findings: the cited study discusses reliability and task completion [S1]."
+
+        with patch("app.execution.provider_is_configured", return_value=True), \
+             patch("app.execution.collect_research", side_effect=fake_research), \
+             patch("app.execution.request_completion", side_effect=fake_completion):
+            await execute_task(plan.task_id)
+
+        result = await TASKS.get(plan.task_id)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.execution_status, "completed")
+        self.assertEqual(result.research_status, "completed")
+        self.assertEqual(result.research_credits, 1)
+        self.assertEqual(len(result.research_sources), 1)
+        self.assertIn("[S1]", result.result_markdown or "")
+        self.assertTrue(any(event.kind == "web_research_completed" for event in result.events))
+
+    async def test_research_qa_rejects_missing_source_citations(self):
+        from app.schemas import ResearchSource
+
+        plan = self.make_plan().model_copy(update={
+            "instruction": "Research evidence-based approaches to evaluate AI agent teams.",
+            "title": "AI agent evaluation research",
+            "category": "research",
+        })
+        await TASKS.create(plan)
+        await TASKS.update(plan.task_id, execution_status="queued", approval_status="approved")
+        source = ResearchSource(
+            source_id="S1", query="AI agent evaluation",
+            title="Agent evaluation study", url="https://research.example.org/study",
+            snippet="The source describes evaluation criteria.",
+        )
+
+        async def fake_research(instruction, subtask_titles):
+            return {"status": "completed", "notice": "One source collected.", "sources": [source], "credits": 1, "errors": []}
+
+        async def fake_completion(messages, *, temperature=0.2, json_mode=False):
+            system = messages[0]["content"]
+            if "independent QA authority" in system:
+                return json.dumps({
+                    "decision": "approve", "summary": "Looks good.",
+                    "issues": [], "revision_instructions": "", "affected_agents": [],
+                })
+            if "facilitating a transparent" in system:
+                return "The team discussed the source."
+            if "principal editor" in system:
+                return "# Research Report\n\nA conclusion without any source citation."
+            return "Specialist findings based on the provided search context."
+
+        with patch("app.execution.provider_is_configured", return_value=True), \
+             patch("app.execution.collect_research", side_effect=fake_research), \
+             patch("app.execution.request_completion", side_effect=fake_completion):
+            await execute_task(plan.task_id)
+
+        result = await TASKS.get(plan.task_id)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.execution_status, "revision_required")
+        self.assertEqual(result.qa_status, "rejected")
+        self.assertIn("source-citation integrity check", result.qa_feedback or "")
+
+
     async def test_demo_plan_cannot_be_executed_as_live_agents(self):
         plan = self.make_plan().model_copy(update={"execution_mode": "demo"})
         await TASKS.create(plan)
