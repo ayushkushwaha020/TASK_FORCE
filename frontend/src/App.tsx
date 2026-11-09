@@ -40,10 +40,11 @@ const starterPrompts = [
 
 function robotVariant(agent?: Agent, index = 0): "scout" | "forge" | "orbit" | "sentinel" {
   const role = [agent?.name, agent?.role, agent?.task].filter(Boolean).join(" ").toLowerCase();
-  if (/\\b(qa|quality|test|review|verif|sentinel)\\b/.test(role)) return "sentinel";
-  if (/\\b(research|analyst|data|scout|investigat)\\b/.test(role)) return "scout";
-  if (/\\b(engineer|developer|code|builder|architect|forge|programmer)\\b/.test(role)) return "forge";
-  if (/\\b(director|project|planner|manager|coordinator|operations|orbit)\\b/.test(role)) return "orbit";
+  const has = (...terms: string[]) => terms.some((term) => role.includes(term));
+  if (has("qa", "quality", "test", "review", "verif", "sentinel")) return "sentinel";
+  if (has("research", "analyst", "data", "scout", "investigat")) return "scout";
+  if (has("engineer", "developer", "code", "builder", "architect", "forge", "programmer")) return "forge";
+  if (has("director", "project", "planner", "manager", "coordinator", "operations", "orbit")) return "orbit";
   return (["scout", "forge", "orbit", "sentinel"] as const)[index % 4];
 }
 
