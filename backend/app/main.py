@@ -45,8 +45,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Autonomous AI Workforce API",
-    version="0.3.0",
-    description="Approval-gated multi-agent task planning with durable task history.",
+    version="0.4.0",
+    description="Approval-gated multi-agent planning and execution with durable task history and optional Redis Streams queue.",
     lifespan=lifespan,
 )
 
@@ -86,7 +86,7 @@ async def root():
         "status": "ok",
         "health": "/health",
         "docs": "/docs",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "storage_backend": TASKS.storage_backend,
         "durable_storage_configured": TASKS.durable_storage_configured,
         "task_queue_backend": "redis_streams" if TASK_QUEUE is not None else "background_tasks_preview",
@@ -97,7 +97,7 @@ async def root():
 @app.get("/health")
 async def health():
     return {
-        "status": "ok", "service": "autonomous-ai-workforce-api", "version": "0.3.0",
+        "status": "ok", "service": "autonomous-ai-workforce-api", "version": "0.4.0",
         "storage_backend": TASKS.storage_backend,
         "durable_storage_configured": TASKS.durable_storage_configured,
         "task_queue_backend": "redis_streams" if TASK_QUEUE is not None else "background_tasks_preview",
