@@ -43,7 +43,8 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 - Providers are ordered by priority. Optional local request caps, bounded retries, per-provider cooldowns, fallback models, and failover are supported.
 - Each network attempt, including retry/fallback, consumes a local request-budget slot.
 - Local counters are process-local, not authoritative provider quota information. Provider quota, billing, free-tier rules, and terms still apply; quota bypass is not a design goal.
-- Credentials are stored only in backend hosting environment variables and never returned from the configuration endpoint.
+- Credentials are stored only in backend hosting environment variables and never returned from configuration or provider-test endpoints.
+- A user-triggered provider connection test sends one tiny prompt per configured endpoint, counts it against local budgets, and reports only status/latency. It does not run automatically.
 
 ## Implemented V2 behaviour
 - Provider-backed plan generation.
