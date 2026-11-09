@@ -135,6 +135,7 @@ async def create_plan(request: PlanRequest) -> PlanResponse:
             ]
             return PlanResponse(
                 task_id=task_id,
+                instruction=instruction,
                 title=str(data.get("title") or title)[:120],
                 category=str(data.get("category") or category)[:60],
                 execution_mode="provider_planned",
@@ -146,7 +147,8 @@ async def create_plan(request: PlanRequest) -> PlanResponse:
         except Exception as exc:
             agents, subtasks = make_demo_plan(instruction, category)
             return PlanResponse(
-                task_id=task_id, title=title, category=category, execution_mode="demo",
+                task_id=task_id,
+                instruction=instruction, title=title, category=category, execution_mode="demo",
                 notice=f"Provider planning failed ({type(exc).__name__}). A local demo plan is shown; no AI-provider execution or task execution is claimed.",
                 agents=agents, subtasks=subtasks, qa_status="pending_execution",
             )
@@ -154,6 +156,7 @@ async def create_plan(request: PlanRequest) -> PlanResponse:
     agents, subtasks = make_demo_plan(instruction, category)
     return PlanResponse(
         task_id=task_id,
+                instruction=instruction,
         title=title,
         category=category,
         execution_mode="demo",
