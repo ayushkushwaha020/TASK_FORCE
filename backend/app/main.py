@@ -21,7 +21,7 @@ app = FastAPI(
 
 origins = [
     origin.strip()
-    for origin in __import__("os").getenv("FRONTEND_ORIGINS", "http://localhost:5173").split(",")
+    for origin in os.getenv("FRONTEND_ORIGINS", "http://localhost:5173").split(",")
     if origin.strip()
 ]
 app.add_middleware(
