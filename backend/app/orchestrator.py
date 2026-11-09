@@ -109,10 +109,19 @@ async def create_plan(request: PlanRequest) -> PlanResponse:
                 )
                 for i, a in enumerate(raw_agents)
             ]
-            if not any("qa" in a.role.lower() or "verif" in a.role.lower() for a in agents):
+            has_qa = any("qa" in a.role.lower() or "verif" in a.role.lower() for a in agents)
+            if not has_qa:
+                if len(agents) >= 20:
+                    agents = agents[:19]
                 agents.append(AgentPlan(
                     id=f"agent-{len(agents)+1}", name="QA Verifier", role="Independent QA Verifier",
                     personality="skeptical", task="Review the plan and later verify deliverables independently.", emoji="🧪"
+                ))
+            while len(agents) < 3:
+                agents.insert(-1, AgentPlan(
+                    id=f"agent-{len(agents)+1}", name=f"Support Specialist {len(agents)+1}",
+                    role="Task Support Specialist", personality="focused",
+                    task="Support the assigned workstreams and integrate relevant findings.", emoji="🤖"
                 ))
             agents = agents[:20]
             raw_steps = data["subtasks"][:12]
