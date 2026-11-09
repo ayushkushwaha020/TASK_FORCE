@@ -27,9 +27,15 @@ def _provider_registry() -> list[dict[str, Any]]:
             api_key = str(item.get("api_key", "")).strip()
             base_url = str(item.get("base_url", "")).strip().rstrip("/")
             model = str(item.get("model", "")).strip()
+            protocol = str(item.get("protocol", "openai_compatible")).strip().lower()
+            if protocol not in ("openai_compatible", "anthropic_messages", "gemini_generate_content"):
+                raise ValueError(f"Provider {name} uses an unsupported protocol: {protocol}.")
             if not name or not api_key or not base_url or not model:
                 raise ValueError(f"Provider entry {index + 1} needs name, api_key, base_url, and model.")
             cap = item.get("max_requests_per_hour")
+            max_output_tokens = item.get("max_output_tokens", 4096)
+            if not isinstance(max_output_tokens, int) or max_output_tokens < 256 or max_output_tokens > 65536:
+                raise ValueError(f"Provider {name} max_output_tokens must be between 256 and 65536.")
             if cap is not None and (not isinstance(cap, int) or cap < 1 or cap > 10000):
                 raise ValueError(f"Provider {name} max_requests_per_hour must be between 1 and 10000.")
             if not base_url.startswith(("https://", "http://")):
@@ -38,16 +44,33 @@ def _provider_registry() -> list[dict[str, Any]]:
                 raise ValueError(f"Provider names must be unique; duplicate name: {name}.")
             providers.append({
                 "name": name, "api_key": api_key, "base_url": base_url, "model": model,
+                "protocol": protocol,
+                "api_version": str(item.get("api_version", "2026-10-21")),
+                "max_output_tokens": max_output_tokens,
                 "fallback_model": str(item.get("fallback_model", "")).strip(),
                 "priority": int(item.get("priority", 100)),
                 "max_requests_per_hour": cap,
             })
     if os.getenv("AI_API_KEY", "").strip() and os.getenv("AI_MODEL", "").strip():
+        protocol = os.getenv("AI_PROVIDER_PROTOCOL", "openai_compatible").strip().lower()
+        if protocol not in ("openai_compatible", "anthropic_messages", "gemini_generate_content"):
+            raise ValueError(f"AI_PROVIDER_PROTOCOL is unsupported: {protocol}.")
+        default_bases = {
+            "openai_compatible": "https://api.openai.com/v1",
+            "anthropic_messages": "https://api.anthropic.com",
+            "gemini_generate_content": "https://generativelanguage.googleapis.com/v1beta",
+        }
+        name = os.getenv("AI_PROVIDER_NAME", "default-provider").strip() or "default-provider"
+        if any(existing["name"] == name for existing in providers):
+            raise ValueError(f"Provider names must be unique; duplicate name: {name}.")
         providers.append({
-            "name": os.getenv("AI_PROVIDER_NAME", "default-compatible").strip() or "default-compatible",
+            "name": name,
             "api_key": os.getenv("AI_API_KEY", "").strip(),
-            "base_url": os.getenv("AI_API_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
+            "base_url": os.getenv("AI_API_BASE_URL", default_bases[protocol]).rstrip("/"),
             "model": os.getenv("AI_MODEL", "").strip(),
+            "protocol": protocol,
+            "api_version": os.getenv("AI_API_VERSION", "2026-10-21"),
+            "max_output_tokens": int(os.getenv("AI_MAX_OUTPUT_TOKENS", "4096")),
             "fallback_model": os.getenv("AI_FALLBACK_MODEL", "").strip(),
             "priority": int(os.getenv("AI_PROVIDER_PRIORITY", "10")),
             "max_requests_per_hour": None,
@@ -74,13 +97,14 @@ def provider_status() -> dict[str, Any]:
             usage.append({
                 "name": provider["name"],
                 "model": provider["model"],
+                "protocol": provider["protocol"],
                 "max_requests_per_hour": provider["max_requests_per_hour"],
                 "requests_this_hour": len(bucket),
                 "cooling_down": _provider_cooldowns.get(provider["name"], 0) > now,
             })
         return {
             "provider_configured": bool(providers),
-            "provider_type": "openai-compatible-router" if providers else None,
+            "provider_type": "multi-protocol-router" if providers else None,
             "provider_count": len(providers),
             "providers": usage,
             "fallback_configured": any(p.get("fallback_model") for p in providers),
@@ -113,30 +137,109 @@ async def _call_model(
     provider: dict[str, Any], messages: list[dict[str, str]], *, temperature: float, json_mode: bool, model: str
 ) -> str:
     timeout = float(os.getenv("AI_REQUEST_TIMEOUT_SECONDS", "60"))
-    body: dict[str, Any] = {"model": model, "temperature": temperature, "messages": messages}
-    if json_mode:
-        body["response_format"] = {"type": "json_object"}
-    headers = {"Authorization": f"Bearer {provider['api_key']}", "Content-Type": "application/json"}
-    url = provider["base_url"] + "/chat/completions"
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(url, headers=headers, json=body)
-        # Some OpenAI-compatible endpoints do not implement response_format.
-        if json_mode and response.status_code in (400, 422):
-            # Some compatible endpoints do not support response_format. Count this
-            # second underlying HTTP request against the same local provider budget.
-            if not _reserve_provider(provider):
-                response.raise_for_status()
-            body.pop("response_format", None)
+    protocol = provider.get("protocol", "openai_compatible")
+    api_key = provider["api_key"]
+    base_url = provider["base_url"].rstrip("/")
+
+    if protocol == "openai_compatible":
+        body: dict[str, Any] = {"model": model, "temperature": temperature, "messages": messages}
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        url = base_url + "/chat/completions"
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, headers=headers, json=body)
-        response.raise_for_status()
-        payload = response.json()
-    try:
-        text = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError("Provider returned an unexpected chat-completion response.") from exc
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError("Provider returned an empty response.")
-    return text.strip()
+            if json_mode and response.status_code in (400, 422):
+                # Count this second underlying HTTP request against the same provider budget.
+                if not _reserve_provider(provider):
+                    response.raise_for_status()
+                body.pop("response_format", None)
+                response = await client.post(url, headers=headers, json=body)
+            response.raise_for_status()
+            payload = response.json()
+        try:
+            text = payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ValueError("OpenAI-compatible provider returned an unexpected response.") from exc
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Provider returned an empty response.")
+        return text.strip()
+
+    if protocol == "anthropic_messages":
+        system_text = "\n\n".join(m["content"] for m in messages if m.get("role") in ("system", "developer"))
+        chat_messages = [
+            {"role": m.get("role") if m.get("role") in ("user", "assistant") else "user", "content": m.get("content", "")}
+            for m in messages if m.get("role") not in ("system", "developer")
+        ]
+        body = {
+            "model": model,
+            "max_tokens": provider.get("max_output_tokens", 4096),
+            "temperature": temperature,
+            "messages": chat_messages,
+        }
+        if system_text:
+            body["system"] = system_text
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": provider.get("api_version", "2026-10-21"),
+            "Content-Type": "application/json",
+        }
+        url = base_url + ("/messages" if base_url.endswith("/v1") else "/v1/messages")
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(url, headers=headers, json=body)
+            response.raise_for_status()
+            payload = response.json()
+        try:
+            text = "\n".join(block["text"] for block in payload["content"] if block.get("type") == "text")
+        except (KeyError, TypeError) as exc:
+            raise ValueError("Anthropic Messages API returned an unexpected response.") from exc
+        if not text.strip():
+            raise ValueError("Anthropic returned no text content.")
+        return text.strip()
+
+    if protocol == "gemini_generate_content":
+        system_text = "\n\n".join(m["content"] for m in messages if m.get("role") in ("system", "developer"))
+        contents = [
+            {
+                "role": "model" if m.get("role") == "assistant" else "user",
+                "parts": [{"text": m.get("content", "")}],
+            }
+            for m in messages if m.get("role") not in ("system", "developer")
+        ]
+        body: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": provider.get("max_output_tokens", 4096),
+            },
+        }
+        if system_text:
+            body["systemInstruction"] = {"parts": [{"text": system_text}]}
+        if json_mode:
+            body["generationConfig"]["responseMimeType"] = "application/json"
+        model_path = model if model.startswith("models/") else "models/" + model
+        url = base_url + "/" + model_path + ":generateContent"
+        headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(url, headers=headers, json=body)
+            response.raise_for_status()
+            payload = response.json()
+        try:
+            candidates = payload.get("candidates", [])
+            text = "\n".join(
+                part["text"]
+                for candidate in candidates
+                for part in candidate.get("content", {}).get("parts", [])
+                if isinstance(part.get("text"), str)
+            )
+        except (AttributeError, KeyError, TypeError) as exc:
+            raise ValueError("Gemini generateContent returned an unexpected response.") from exc
+        if not text.strip():
+            feedback = payload.get("promptFeedback", {}).get("blockReason", "")
+            raise ValueError("Gemini returned no text candidate." + (f" Block reason: {feedback}" if feedback else ""))
+        return text.strip()
+
+    raise ValueError(f"Unsupported provider protocol: {protocol}")
 
 
 async def request_completion(
