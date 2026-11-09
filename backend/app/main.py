@@ -50,6 +50,17 @@ def enforce_rate_limit(request: Request, action: str, limit: int) -> None:
     bucket.append(now)
 
 
+@app.get("/")
+async def root():
+    return {
+        "service": "Autonomous AI Workforce API",
+        "status": "ok",
+        "health": "/health",
+        "docs": "/docs",
+        "version": "0.2.0",
+    }
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "autonomous-ai-workforce-api", "version": "0.2.0"}
