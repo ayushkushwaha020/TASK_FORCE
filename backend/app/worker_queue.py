@@ -199,5 +199,5 @@ class RedisStreamTaskQueue:
         await self.redis.aclose()
 
 
-QUEUE_CONFIGURED = bool(os.getenv("REDIS_URL", "").strip())
+QUEUE_CONFIGURED = bool(os.getenv("REDIS_URL", "").strip() and os.getenv("DATABASE_URL", "").strip())
 TASK_QUEUE = RedisStreamTaskQueue() if QUEUE_CONFIGURED else None
