@@ -56,7 +56,9 @@ Statuses are evidence-based:
 - [ ] Run the migration against an actual Supabase database.
 - [ ] Verify live Render-to-Supabase connectivity, create/read/update persistence, and restart recovery.
 - [ ] Backfill any pre-existing in-memory tasks (not currently supported).
-- [ ] Durable worker queue, job leases, retries across restarts, and event fanout.
+- [x] Redis Streams queue with consumer group, pending-message reclamation, bounded delivery attempts, and dead-letter handling (single API worker).
+- [~] Interrupted jobs are returned to queued state when durable Redis queue mode is configured; live process-crash/reclaim test is not available without a configured Redis instance.
+- [ ] Multi-worker leases/heartbeats, event fanout, and production deployment.
 - [ ] Server-Sent Events or WebSockets instead of polling.
 - [ ] Persistent project memory and permission-scoped agent memory.
 
