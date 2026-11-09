@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 from contextlib import asynccontextmanager
@@ -27,7 +28,7 @@ async def lifespan(app: FastAPI):
     worker_task = None
     if TASK_QUEUE is not None:
         await TASK_QUEUE.initialize()
-        worker_task = __import__("asyncio").create_task(TASK_QUEUE.run(), name="workforce-redis-stream-worker")
+        worker_task = asyncio.create_task(TASK_QUEUE.run(), name="workforce-redis-stream-worker")
     try:
         yield
     finally:
@@ -35,7 +36,7 @@ async def lifespan(app: FastAPI):
             worker_task.cancel()
             try:
                 await worker_task
-            except __import__("asyncio").CancelledError:
+            except asyncio.CancelledError:
                 pass
         if TASK_QUEUE is not None:
             await TASK_QUEUE.close()
