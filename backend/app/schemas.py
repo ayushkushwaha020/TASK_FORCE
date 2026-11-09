@@ -60,6 +60,19 @@ class AgentMessage(BaseModel):
     content: str
 
 
+
+
+class ResearchSource(BaseModel):
+    source_id: str
+    query: str
+    title: str
+    url: str
+    snippet: str
+    score: float | None = None
+    published_date: str | None = None
+    provider: str = "tavily"
+
+
 class PlanResponse(BaseModel):
     task_id: str
     instruction: str
@@ -79,6 +92,7 @@ class PlanResponse(BaseModel):
     team_discussion: str | None = None
     result_markdown: str | None = None
     shared_memory: list[SharedMemoryEntry] = Field(default_factory=list)
+    research_sources: list[ResearchSource] = Field(default_factory=list)
     messages: list[AgentMessage] = Field(default_factory=list)
     events: list[TaskEvent] = Field(default_factory=list)
     created_at: str = Field(default_factory=utc_now)
