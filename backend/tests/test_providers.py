@@ -148,7 +148,7 @@ class ProviderRouterTests(unittest.IsolatedAsyncioTestCase):
             status = providers.provider_status()
             registry = providers._provider_registry()
         self.assertTrue(status["provider_configured"])
-        self.assertEqual(registry[0]["name"], "default-compatible")
+        self.assertEqual(registry[0]["name"], "default-provider")
         self.assertNotIn("legacy-secret", json.dumps(status))
 
 
