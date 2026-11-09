@@ -1,50 +1,66 @@
-# Architecture — V1 Foundation
+# Architecture — V2 Agent Execution Preview
 
-## System shape
+## Runtime path
 
 ```text
-Browser (React / Vite)
-  | HTTPS JSON
-  v
+React Command Center / Workforce HQ
+        | plan / approve / poll
+        v
 FastAPI API
-  |-- Task Planner / Classifier
-  |-- Dynamic Team Composer
-  |-- Provider Adapter (server-side credentials)
-  |-- QA role injection
-  |-- Explicit demo/provider-planned status
-  v
-Task Plan Response
-  |-- Agents
-  |-- Workstreams
-  |-- QA gate status
-  |-- Execution-mode notice
+  |-- task planner and dynamic team composer
+  |-- human approval gate
+  |-- process-local task state store
+  |-- execution scheduler (2 task runs; max 4 provider calls in parallel)
+  |-- specialist agents (up to 8 active)
+  |-- shared task memory and structured messages
+  |-- team director deliberation
+  |-- deliverable compiler
+  |-- independent QA reviewer + one revision round
+        |
+        v
+Task snapshot: events, status, messages, memory, QA verdict, deliverable
 ```
 
-## Confirmed product decisions
-- Dual interface: chat command center and visual workforce workspace.
-- Approval-based autonomy.
-- Dynamic teams sized to complexity.
-- Shared memory and agent communication are required next-stage modules.
-- Independent QA must be able to reject work and request revisions.
-- Recovery is bounded and escalates unresolved failures.
-- Robot activity must reflect backend state; no fake activity.
-- Secrets remain server-side.
+## Human approval lifecycle
+1. User submits an instruction.
+2. Backend creates a dynamic team and workstream plan; task status becomes `awaiting_approval`.
+3. User approves or rejects the plan.
+4. Only an approved provider-backed plan can start execution.
+5. Specialists work in parallel; completed findings enter shared memory.
+6. The director compares specialist contributions and records agreements and unresolved differences.
+7. The editor compiles a draft deliverable.
+8. Independent QA approves or rejects the draft. A rejected draft receives one bounded revision round. If QA still rejects, the task remains `revision_required`.
 
-## Current implementation boundary
-V1 Foundation implements a task-planning vertical slice. Without provider credentials, planning is deterministic and marked `demo`. With a configured OpenAI-compatible provider, the backend can request a structured plan and marks it `provider_planned`. Neither mode claims that subtasks were executed or deliverables verified.
+## Implemented V2 behaviour
+- Provider-backed plan generation.
+- Explicit approval endpoint.
+- Bounded primary-model retry and optional `AI_FALLBACK_MODEL`.
+- Up to eight active specialists with a four-call provider concurrency limit.
+- Shared task memory and agent-to-director messages.
+- Team deliberation with contradictions and open questions.
+- Independent QA verdict and one revision round.
+- Recovery by reassigning a failed specialist workstream once to a successful team member.
+- Frontend polling for live execution status and event feed.
 
-## Planned production architecture
-- Frontend: Vercel.
-- API and background workers: Railway.
-- Persistent task state: PostgreSQL.
-- Queue / transient coordination: Redis.
-- Object storage: private bucket for uploaded and generated files.
-- Provider adapters: one adapter per supported API family.
-- Tool execution: isolated, short-lived sandboxes with explicit permissions.
+## Current preview limits
+- Task state and memory live in process memory. Restarts clear them; multiple API instances are not supported.
+- Background execution runs within the API service, not a durable queue.
+- No agent has browser, filesystem, terminal, shell, or external-service tools.
+- Provider output is model-generated text. The system must not claim code execution, website research, external verification, or completion of real-world actions.
+- AI QA is a separate model review, not deterministic proof of correctness.
+- The API has a lightweight in-memory rate guard; production still needs durable user identity, quotas, audit, and anti-abuse protections.
+
+## Production target
+- Frontend: Render static site preview; Vercel remains an alternative.
+- API and background workers: Render for the current hackathon preview.
+- Durable task store: PostgreSQL.
+- Queue and event fanout: Redis or a durable job system.
+- File storage: private object storage.
+- Tool execution: isolated, permission-scoped sandboxes.
+- Multiple provider adapters with quota, cost, timeout, and fallback policies.
 
 ## Trust boundaries
 - Browser never receives provider secrets.
-- Uploaded files and web content are untrusted input.
-- Tool permissions are scoped per task and agent.
-- Sensitive or irreversible operations pause for explicit approval.
-- QA status is evidence-based; planning is not verification.
+- Uploaded files and external content will be treated as untrusted input.
+- Sensitive, external, destructive, or irreversible operations require a separate explicit human approval.
+- QA status is evidence-based; a successful text review is not the same as code/test execution.
