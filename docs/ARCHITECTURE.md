@@ -1,4 +1,4 @@
-# Architecture — V2 Agent Execution Preview
+# Architecture — V2 Agent Execution and Provider Routing
 
 ## Runtime path
 
@@ -10,7 +10,11 @@ FastAPI API
   |-- task planner and dynamic team composer
   |-- human approval gate
   |-- process-local task state store
-  |-- provider router (priority, local caps, retry, failover)
+  |-- multi-protocol provider router
+  |     |-- OpenAI-compatible Chat Completions
+  |     |-- Google Gemini generateContent
+  |     |-- Anthropic Messages
+  |     |-- per-provider local budgets, retries, cooldown and failover
   |-- specialist agents (up to 8 active; 4 provider calls in parallel)
   |-- shared task memory and structured messages
   |-- team director deliberation
@@ -31,18 +35,20 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 7. The editor compiles a draft deliverable.
 8. Independent QA approves or rejects the draft. A rejected draft receives one bounded revision round. If QA still rejects, the task remains `revision_required`.
 
-## Provider routing
-- One legacy OpenAI-compatible endpoint is supported with `AI_API_KEY`, `AI_API_BASE_URL`, and `AI_MODEL`.
-- Multiple OpenAI-compatible endpoints can be registered in server-only `AI_PROVIDERS_JSON`.
-- Lower priority values are tried first; optional per-provider hourly request caps are enforced locally.
-- A rate-limited or unavailable endpoint is skipped in favour of another configured endpoint.
-- Credentials never leave the backend and are not returned by the configuration-status API.
-- Local request counters are not authoritative provider quota data. This is not unlimited-token or quota-evasion behaviour.
+## Provider adapters and routing
+- `openai_compatible`: Chat Completions request/response translation.
+- `gemini_generate_content`: Gemini REST `generateContent` with system instructions, content roles, generation configuration, and `x-goog-api-key` authentication.
+- `anthropic_messages`: Anthropic Messages API with top-level system prompt, user/assistant turns, `max_tokens`, `x-api-key`, and configurable API-version header.
+- Multiple endpoints are configured by server-only `AI_PROVIDERS_JSON`; the legacy single-provider variables remain supported.
+- Providers are ordered by priority. Optional local request caps, bounded retries, per-provider cooldowns, fallback models, and failover are supported.
+- Each network attempt, including retry/fallback, consumes a local request-budget slot.
+- Local counters are process-local, not authoritative provider quota information. Provider quota, billing, free-tier rules, and terms still apply; quota bypass is not a design goal.
+- Credentials are stored only in backend hosting environment variables and never returned from the configuration endpoint.
 
 ## Implemented V2 behaviour
 - Provider-backed plan generation.
 - Explicit human approval endpoint.
-- Priority-based multi-provider routing, optional local caps, bounded retry, and provider failover.
+- Multi-protocol provider routing across OpenAI-compatible, Gemini and Anthropic APIs.
 - Up to eight active specialists with a four-call provider concurrency limit.
 - Shared task memory and agent-to-director messages.
 - Team deliberation with contradictions and open questions.
@@ -53,7 +59,7 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 ## Current preview limits
 - Task state and memory live in process memory. Restarts clear them; multiple API instances are not supported.
 - Background execution runs within the API service, not a durable queue.
-- Only OpenAI-compatible Chat Completions endpoints are supported by this router. Native Gemini/Anthropic protocol adapters are future work.
+- Native adapters currently handle text prompt/response calls. Native multimodal file uploads, browser/search tools, function calling, and terminal/code-execution tools are not yet connected.
 - No agent has browser, filesystem, terminal, shell, or external-service tools.
 - Provider output is model-generated text. The system must not claim code execution, website research, external verification, or completion of real-world actions.
 - AI QA is a separate model review, not deterministic proof of correctness.
@@ -65,10 +71,15 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 - Queue and event fanout: Redis or a durable job system.
 - File storage: private object storage.
 - Tool execution: isolated, permission-scoped sandboxes.
-- Native provider adapters and policy-aware routing with cost, quota, timeout, and fallback budgets.
+- Provider routing with measured token/cost budgets, provider-native usage telemetry, and quotas across processes.
 
 ## Trust boundaries
 - Browser never receives provider secrets.
 - Uploaded files and external content will be treated as untrusted input.
 - Sensitive, external, destructive, or irreversible operations require a separate explicit human approval.
 - QA status is evidence-based; a successful text review is not the same as code/test execution.
+
+## API reference links
+- Gemini generateContent: https://ai.google.dev/api/generate-content
+- Gemini API keys: https://ai.google.dev/gemini-api/docs/api-key
+- Anthropic Messages: https://platform.claude.com/docs/en/api/messages/create
