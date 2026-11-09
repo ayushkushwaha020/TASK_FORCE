@@ -214,10 +214,20 @@ async def execute_task(task_id: str) -> None:
                 raise RuntimeError("One or more specialist workstreams failed after bounded recovery.")
             task = await TASKS.get(task_id)
             assert task is not None
+            grouped_outputs: dict[str, list[str]] = {}
             for index, item in enumerate(results):
                 if task.subtasks:
                     subtask = task.subtasks[index % len(task.subtasks)]
-                    await TASKS.update_subtask(task_id, subtask.id, status="completed", output=(subtask.output or "") + f"\n\n[{item['agent']['name']}]\n{item['output'][:3500]}")
+                    grouped_outputs.setdefault(subtask.id, []).append(
+                        f"[{item['agent']['name']}]\n{item['output'][:3500]}"
+                    )
+            for subtask in task.subtasks:
+                outputs = grouped_outputs.get(subtask.id, [])
+                if outputs:
+                    await TASKS.update_subtask(
+                        task_id, subtask.id, status="completed",
+                        output="\n\n".join(outputs)[:10000],
+                    )
             discussion = await _team_deliberation(task_id, task, results)
             deliverable = await _compile_deliverable(task_id, task, results, discussion)
             verdict: dict[str, Any] | None = None
