@@ -2,25 +2,31 @@
 
 **One user. One instruction. An entire AI-powered workforce.**
 
-A multi-agent AI workforce platform that turns a user request into a dynamically assembled team, coordinated task plan, independent QA review, and professionally delivered result.
+A multi-agent AI workforce platform that assembles specialists, coordinates their work, shares task memory, and submits an integrated deliverable to an independent QA reviewer.
 
 ## Confirmed product decisions
 - Dual interface: AI Command Center (chat) + AI Workforce HQ (visual workspace).
-- Approval-based autonomy: internal permitted work can proceed; sensitive, external, destructive, or irreversible actions require explicit approval.
-- Dynamic teams sized to task complexity (typically 3–20 agents).
+- Approval-based autonomy: the user approves a plan before agents start internal execution.
+- Dynamic teams, sized to task complexity (typically 3–20 agents).
 - Shared task memory and structured agent communication.
-- Mandatory independent QA with authority to reject and request revisions.
-- Bounded autonomous recovery and escalation.
-- Animated robot identities represent real agents; demo activity is always labelled.
-- Multiple AI providers through server-side adapters. API quotas and context limits are respected; usage is never described as unlimited.
-- Login-free initial experience, with optional persistence later.
+- Mandatory independent QA with authority to reject work and request revisions.
+- Bounded retry, fallback-model support, reassignment, and escalation.
+- Robot activity reflects backend-reported task state.
+- Server-side API credentials; provider quotas and limits are respected.
+- Login-free preview; optional persistent accounts are a later milestone.
 
-## Current milestone
-**V1 Foundation** — responsive dual-interface shell, task intake, dynamic role planning, task state, and explicit demo-vs-provider status. The first milestone does not claim that agents have executed external actions, run code, or verified deliverables unless the backend reports evidence.
+## Current milestone — V2 Agent Execution Preview
+- Provider-backed planning and approval-gated specialist execution.
+- Parallel specialist outputs, shared memory, structured messages, and team deliberation.
+- Integrated draft deliverable and independent QA review.
+- One bounded QA revision round.
+- Live status polling, activity timeline, shared-memory feed, and QA report in the frontend.
+
+**Important boundaries:** agents currently produce and review model-generated text. They do not yet have browser, filesystem, terminal, or external-action tools. The platform must not claim that websites were browsed, code was executed, messages were sent, or external facts were verified. QA is an independent AI content review, not deterministic proof of correctness. Tasks currently live in backend process memory and can be cleared by a service restart.
 
 ## Repository layout
 - `frontend/` — React, TypeScript, Vite.
-- `backend/` — FastAPI orchestration API.
+- `backend/` — FastAPI planning and execution API.
 - `docs/` — architecture, roadmap, acceptance checklist.
 
 ## Local development
@@ -35,7 +41,7 @@ Backend:
 ```bash
 cd backend
 python -m venv .venv
-# Activate the virtual environment, then:
+# Activate the environment
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
@@ -43,12 +49,13 @@ uvicorn app.main:app --reload --port 8000
 Set `VITE_API_BASE_URL=http://localhost:8000` in `frontend/.env.local` if needed.
 
 ## AI provider configuration
-Copy `backend/.env.example` to `backend/.env` and configure a compatible provider. Keep credentials server-side only. Never commit real keys.
+Copy `backend/.env.example` to `backend/.env`. Configure `AI_API_KEY`, `AI_MODEL`, and optionally `AI_API_BASE_URL` and `AI_FALLBACK_MODEL`. Keep credentials server-side only. Never commit real keys.
 
-## Hosting direction
-- Frontend: Vercel, connected to this GitHub repository with root directory `frontend`.
-- Backend: Railway, deployed from `backend` with the FastAPI start command documented in `backend/README.md`.
-- Configure CORS and secrets in hosting environment settings.
-- No deployment is considered successful until its health endpoint and deployed UI are checked.
+Without an API key, the app can create clearly labelled demo plans but cannot start live specialist execution.
+
+## Hosting
+The current preview is hosted on Render:
+- Frontend: `https://autonomous-ai-workforce-web.onrender.com`
+- Backend: `https://autonomous-ai-workforce-api.onrender.com`
 
 See `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, and `docs/ACCEPTANCE_CHECKLIST.md`.
