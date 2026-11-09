@@ -57,8 +57,10 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 - Recovery by reassigning a failed specialist workstream once to a successful team member.
 - Frontend polling for live execution status and event feed.
 
-## V3 Supabase persistence foundation
+## V3 Supabase persistence and Redis Streams queue foundation
 - The TaskStore keeps the existing async mutation interface and persists the full task snapshot to `workforce_tasks` through SQLAlchemy when `DATABASE_URL` is configured.
+- When both `DATABASE_URL` and `REDIS_URL` are present, approved tasks are added to a Redis Stream and consumed by a single FastAPI-owned consumer group worker. The message is acknowledged only after the task reaches a terminal state; stale pending messages are reclaimed and repeated process failures are dead-lettered.
+- The `/api/tasks/{task_id}/stream` route streams new task events and status updates as Server-Sent Events. The browser uses `EventSource` and falls back to polling if the stream disconnects. This is process-local fanout; multi-instance Redis Pub/Sub and worker leases are not implemented.
 - Supabase Postgres uses asyncpg and SSL; Render should use the Supabase Transaction Pooler (port 6543), with SQLAlchemy and asyncpg prepared-statement caches disabled. Session pooler port 5432 is also supported. SQLite uses aiosqlite for local development. Database credentials are never returned to the browser.
 - Task data is stored in the non-exposed `workforce_private` schema. Row-level security is enabled and table/schema privileges are revoked from `PUBLIC`, `anon`, and `authenticated`; only the backend database connection can access the task snapshots.
 - API startup restores snapshots. Queued/running/reviewing tasks are marked failed with an `execution_interrupted` event because FastAPI in-process jobs cannot be resumed safely.
