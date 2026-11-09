@@ -52,7 +52,7 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 - Multi-protocol provider routing across OpenAI-compatible, Gemini and Anthropic APIs.
 - Up to eight active specialists with a four-call provider concurrency limit.
 - Shared task memory and agent-to-director messages.
-- Team deliberation with contradictions and open questions.
+- Team deliberation with contradictions and open questions.\n- Bounded live Tavily Search for research tasks, source capture and shared-memory injection.\n- Source-ID citation integrity check and explicit no-live-search disclosure when sources are unavailable.\n- Markdown download and browser Print / Save PDF.
 - Independent QA verdict and one revision round.
 - Recovery by reassigning a failed specialist workstream once to a successful team member.
 - Frontend polling for live execution status and event feed.
@@ -65,6 +65,12 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 - Provider output is model-generated text. The system must not claim code execution, website research, external verification, or completion of real-world actions.
 - AI QA is a separate model review, not deterministic proof of correctness.
 - The API has a lightweight in-memory rate guard; production still needs durable user identity, quotas, audit, and anti-abuse protections.
+
+## Research evidence flow
+
+After approval, research tasks call Tavily Search with a maximum of four basic queries, five results per query, and two concurrent HTTP requests. Raw page content is disabled. Results are deduplicated and stored with source IDs, titles, URLs, snippets, query text, optional scores, and provider-reported search credits. The source register is injected into specialist context, the report editor, and independent QA. QA checks that citations use source IDs actually collected. If no source results exist, the final report must disclose the absence of live web search. Snippets are partial evidence leads, not a substitute for opening and reviewing full source pages.
+
+The frontend exposes the source register as clickable URLs and supports Markdown download plus browser print-to-PDF export.
 
 ## Production target
 - Frontend and API: Render for the current hackathon preview.
