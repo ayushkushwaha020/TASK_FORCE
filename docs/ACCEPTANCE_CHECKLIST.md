@@ -26,7 +26,7 @@ Statuses: NOT STARTED / IN PROGRESS / IMPLEMENTED / TESTED / VERIFIED / BLOCKED.
 - [ ] Provider-backed live end-to-end task verified with a configured key
 - [ ] Manual responsive review after V2 UI update
 - [ ] Durable task persistence (preview tasks are in process memory)
-- [ ] Browser/search or code-runner tool integration
+- [x] Bounded Tavily Search for research tasks (up to 4 queries, 5 results each)\n- [x] Research source URLs/snippets stored with stable [S#] IDs in task memory\n- [x] Agent prompts use source IDs and disclose snippets are not full-page review\n- [x] QA requires valid source IDs or an explicit no-live-search disclosure\n- [x] Markdown download and browser Print / Save PDF export\n- [ ] General browser navigation/page extraction and sandboxed code runner
 
 ## V3 — Tools and action governance
 - [ ] Permission-scoped browser/search tools with source capture
