@@ -117,3 +117,39 @@ button{cursor:pointer}
 .agent-avatar{overflow:hidden;background:transparent}
 .agent-avatar .agent-mascot-avatar{width:38px;height:38px;display:block;object-fit:contain}
 @media(prefers-reduced-motion:reduce){.robot,.robot-mascot,.robot-shadow{animation:none!important}}
+
+
+/* V3 robot roster — all four original characters are supplied by robot-atlas.webp */
+.robot{width:82px;height:98px;display:flex;align-items:center;justify-content:center;position:relative;animation:none;overflow:visible}
+.robot-figure{width:96px;height:96px;flex:none;background-image:url("/robot-atlas.webp");background-repeat:no-repeat;background-size:200% 200%;background-position:0 0;filter:drop-shadow(0 8px 10px #5365a544);transform-origin:center bottom;animation:bot-idle 3s ease-in-out infinite}
+.bot-scout{background-position:0 0}
+.bot-forge{background-position:100% 0}
+.bot-orbit{background-position:0 100%}
+.bot-sentinel{background-position:100% 100%}
+.robot:nth-child(2n) .robot-figure{animation-delay:-.8s}
+.robot:nth-child(3n) .robot-figure{animation-delay:-1.35s}
+.robot-state-queued .robot-figure{animation:bot-ready 1.8s ease-in-out infinite}
+.robot-state-running .robot-figure{animation:bot-work .68s ease-in-out infinite alternate;filter:drop-shadow(0 10px 13px #8c83ff77)}
+.robot-state-reviewing .robot-figure{animation:bot-review 1.15s ease-in-out infinite}
+.robot-state-completed .robot-figure{animation:bot-success .9s ease-out 1;filter:drop-shadow(0 10px 13px #54d9ae77)}
+.robot-state-reassigned .robot-figure,.robot-state-revision_requested .robot-figure{animation:bot-work 1s ease-in-out infinite alternate}
+.robot-state-failed .robot-figure{filter:grayscale(.5) opacity(.82)}
+.robot-shadow{position:absolute;bottom:1px;width:44px;height:8px;border-radius:50%;background:#05091599;filter:blur(4px);animation:bot-shadow 3s ease-in-out infinite}
+.team-robot-item .robot{width:68px;height:76px}
+.team-robot-item .robot-figure{width:74px;height:74px}
+.team-robot-item .robot-shadow{width:32px;height:6px}
+.brand-mark.brand-robot-mark{overflow:hidden}
+.brand-robot-mark .robot-figure{width:48px;height:48px;animation:none;filter:drop-shadow(0 4px 7px #4b75d166)}
+.agent-avatar{overflow:hidden;background:transparent;border-radius:10px;display:block;background-image:url("/robot-atlas.webp");background-repeat:no-repeat;background-size:200% 200%}
+.agent-avatar.bot-scout{background-position:0 0}
+.agent-avatar.bot-forge{background-position:100% 0}
+.agent-avatar.bot-orbit{background-position:0 100%}
+.agent-avatar.bot-sentinel{background-position:100% 100%}
+@keyframes bot-idle{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-5px) rotate(-1deg)}}
+@keyframes bot-ready{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+@keyframes bot-work{from{transform:translateY(0) rotate(-2deg)}to{transform:translateY(-8px) rotate(2deg)}}
+@keyframes bot-review{0%,100%{transform:translateX(0) rotate(0)}50%{transform:translateX(3px) rotate(1deg)}}
+@keyframes bot-success{0%{transform:scale(1)}40%{transform:translateY(-10px) rotate(5deg) scale(1.04)}100%{transform:scale(1)}}
+@keyframes bot-shadow{0%,100%{transform:scaleX(1);opacity:.8}50%{transform:scaleX(.78);opacity:.45}}
+@media(max-width:620px){.robot{width:58px;height:72px}.robot-figure{width:72px;height:72px}.robot-shadow{width:32px}.team-robot-item .robot{width:48px;height:54px}.team-robot-item .robot-figure{width:54px;height:54px}}
+@media(prefers-reduced-motion:reduce){.robot-figure,.robot-shadow{animation:none!important}}
