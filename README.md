@@ -15,9 +15,11 @@ A multi-agent AI workforce platform that assembles specialists, coordinates thei
 - Server-side API credentials; provider quotas and limits are respected.
 - Login-free preview; optional persistent accounts are a later milestone.
 
-## Current milestone — V3 Persistence Foundation
+## Current milestone — V3 Persistence, Redis Streams Queue, and Live Task Events
 - Four original role-based 3D robots (Scout, Forge, Orbit, Sentinel) with state-based animations for idle, work, review, success, and recovery.
 - SQLAlchemy task snapshot persistence using Supabase Postgres or SQLite when `DATABASE_URL` is configured.
+- Optional Redis Streams queue for approved tasks when `REDIS_URL` is configured alongside `DATABASE_URL`, with stale-job recovery and dead-letter handling.
+- Server-Sent Events progress stream with EventSource updates and polling fallback.
 - API restart restores task history and explicitly marks interrupted in-process jobs as failed.
 - V2 approval-gated execution, specialist collaboration, provider routing, bounded research, independent QA, and exports remain the feature baseline.
 
