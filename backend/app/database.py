@@ -1,7 +1,7 @@
 """Async SQLAlchemy repository with Supabase Postgres support.
 
-For Render (IPv4), use Supabase's shared pooler in session mode (port 5432).
-Transaction pooler (port 6543) is also supported with asyncpg statement caching off.
+For Render (IPv4), prefer Supabase's shared transaction pooler (port 6543).
+Session pooler (port 5432) is also supported.
 DATABASE_URL remains backend-only.
 """
 import json
