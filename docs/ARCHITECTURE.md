@@ -10,8 +10,8 @@ FastAPI API
   |-- task planner and dynamic team composer
   |-- human approval gate
   |-- process-local task state store
-  |-- execution scheduler (2 task runs; max 4 provider calls in parallel)
-  |-- specialist agents (up to 8 active)
+  |-- provider router (priority, local caps, retry, failover)
+  |-- specialist agents (up to 8 active; 4 provider calls in parallel)
   |-- shared task memory and structured messages
   |-- team director deliberation
   |-- deliverable compiler
@@ -31,10 +31,18 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 7. The editor compiles a draft deliverable.
 8. Independent QA approves or rejects the draft. A rejected draft receives one bounded revision round. If QA still rejects, the task remains `revision_required`.
 
+## Provider routing
+- One legacy OpenAI-compatible endpoint is supported with `AI_API_KEY`, `AI_API_BASE_URL`, and `AI_MODEL`.
+- Multiple OpenAI-compatible endpoints can be registered in server-only `AI_PROVIDERS_JSON`.
+- Lower priority values are tried first; optional per-provider hourly request caps are enforced locally.
+- A rate-limited or unavailable endpoint is skipped in favour of another configured endpoint.
+- Credentials never leave the backend and are not returned by the configuration-status API.
+- Local request counters are not authoritative provider quota data. This is not unlimited-token or quota-evasion behaviour.
+
 ## Implemented V2 behaviour
 - Provider-backed plan generation.
-- Explicit approval endpoint.
-- Bounded primary-model retry and optional `AI_FALLBACK_MODEL`.
+- Explicit human approval endpoint.
+- Priority-based multi-provider routing, optional local caps, bounded retry, and provider failover.
 - Up to eight active specialists with a four-call provider concurrency limit.
 - Shared task memory and agent-to-director messages.
 - Team deliberation with contradictions and open questions.
@@ -45,19 +53,19 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 ## Current preview limits
 - Task state and memory live in process memory. Restarts clear them; multiple API instances are not supported.
 - Background execution runs within the API service, not a durable queue.
+- Only OpenAI-compatible Chat Completions endpoints are supported by this router. Native Gemini/Anthropic protocol adapters are future work.
 - No agent has browser, filesystem, terminal, shell, or external-service tools.
 - Provider output is model-generated text. The system must not claim code execution, website research, external verification, or completion of real-world actions.
 - AI QA is a separate model review, not deterministic proof of correctness.
 - The API has a lightweight in-memory rate guard; production still needs durable user identity, quotas, audit, and anti-abuse protections.
 
 ## Production target
-- Frontend: Render static site preview; Vercel remains an alternative.
-- API and background workers: Render for the current hackathon preview.
+- Frontend and API: Render for the current hackathon preview.
 - Durable task store: PostgreSQL.
 - Queue and event fanout: Redis or a durable job system.
 - File storage: private object storage.
 - Tool execution: isolated, permission-scoped sandboxes.
-- Multiple provider adapters with quota, cost, timeout, and fallback policies.
+- Native provider adapters and policy-aware routing with cost, quota, timeout, and fallback budgets.
 
 ## Trust boundaries
 - Browser never receives provider secrets.
