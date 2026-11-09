@@ -152,7 +152,7 @@ async def _task_event_generator(task_id: str, http_request: Request):
     """Stream task activity events and compact update notifications over SSE."""
     task = await TASKS.get(task_id)
     if task is None:
-        yield "event: task_error\\ndata: {\"detail\":\"Task not found.\"}\\n\\n"
+        yield "event: task_error\ndata: {\"detail\":\"Task not found.\"}\n\n"
         return
 
     last_event_id = http_request.headers.get("last-event-id") or http_request.query_params.get("after") or ""
@@ -168,13 +168,13 @@ async def _task_event_generator(task_id: str, http_request: Request):
             break
         task = await TASKS.get(task_id)
         if task is None:
-            yield "event: task_error\\ndata: {\"detail\":\"Task no longer exists.\"}\\n\\n"
+            yield "event: task_error\ndata: {\"detail\":\"Task no longer exists.\"}\n\n"
             break
 
         new_events = task.events[last_index:]
         for item in new_events:
             payload = item.model_dump(mode="json")
-            yield f"id: {item.id}\\nevent: task_event\\ndata: {json.dumps(payload, ensure_ascii=False)}\\n\\n"
+            yield f"id: {item.id}\nevent: task_event\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
         last_index = len(task.events)
 
         changed = bool(new_events) or task.updated_at != last_updated
@@ -187,14 +187,14 @@ async def _task_event_generator(task_id: str, http_request: Request):
                 "qa_status": task.qa_status,
                 "event_count": len(task.events),
             }
-            yield f"event: task_update\\ndata: {json.dumps(update_payload, ensure_ascii=False)}\\n\\n"
+            yield f"event: task_update\ndata: {json.dumps(update_payload, ensure_ascii=False)}\n\n"
             last_updated = task.updated_at
 
         if task.execution_status in {"completed", "revision_required", "failed", "rejected", "cancelled"}:
             break
 
         if time.monotonic() - last_heartbeat >= 15:
-            yield ": workforce stream alive\\n\\n"
+            yield ": workforce stream alive\n\n"
             last_heartbeat = time.monotonic()
         await asyncio.sleep(1)
 
