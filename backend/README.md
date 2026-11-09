@@ -90,6 +90,22 @@ Native API references:
 - Gemini API key guidance: https://ai.google.dev/gemini-api/docs/api-key
 - Anthropic Messages: https://platform.claude.com/docs/en/api/messages/create
 
+## Live web research
+
+Research-category tasks run a small, bounded Tavily Search batch after the human approves the plan. The current preview limits each task to at most four basic-search queries, five results per query, and two concurrent search requests. Search results are deduplicated by URL and stored with source IDs (`[S1]`, `[S2]`), title, URL, query, short snippet, relevance score, and provider-reported credit count.
+
+Set `TAVILY_API_KEY` in the backend environment to enable live web search. Optional settings:
+- `TAVILY_SEARCH_URL` — defaults to `https://api.tavily.com/search`.
+- `TAVILY_MAX_QUERIES_PER_TASK` — hard-capped at four by this preview.
+- `TAVILY_MAX_RESULTS_PER_QUERY` — hard-capped at five.
+- `TAVILY_TIMEOUT_SECONDS` — request timeout.
+
+The integration requests basic search results and does not download raw page content. Search snippets are evidence leads, not full-page reading or independent fact verification. Agent reports must cite collected source IDs; QA rejects missing or unrecognised source IDs when sources exist. If the key is missing or the search returns no sources, the final report must disclose that live web research was not performed.
+
+## Deliverable export
+
+The Workforce HQ can download the final Markdown draft. The Print / Save PDF action opens the browser print dialog and lets the user save the deliverable as a PDF. This is client-side export; it does not create a server-side PDF file.
+
 ## Agent execution
 
 Without configured providers, the planner returns a clearly labelled local demo plan. Demo plans cannot be executed as live AI work. After a provider-backed plan is approved, the service runs specialist model calls in parallel, stores outputs in shared task memory, asks the team director to compare contributions, compiles a draft, and submits it to an independent QA role. QA can request one bounded revision round.
