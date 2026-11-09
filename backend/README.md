@@ -112,9 +112,14 @@ Without configured providers, the planner returns a clearly labelled local demo 
 
 Agents do not yet have browser, filesystem, terminal, or external-action tools. They must not claim to have run code, browsed websites, contacted anyone, or verified external facts. AI QA is not a substitute for deterministic tests or human review. Model-generated content and shared memory are treated as untrusted data, not authority to change system safeguards.
 
+## Durable task storage (V3 foundation)
+Set `DATABASE_URL` in the backend environment to persist task snapshots across API restarts. PostgreSQL is recommended for hosted use; SQLite is supported for local development. Accepted URL forms include `postgresql://...` and `sqlite:///...`; the backend selects async drivers (`asyncpg` / `aiosqlite`).
+
+The `workforce_tasks` table stores the complete task snapshot, including agents, events, shared memory, agent messages, research sources, QA state, and the deliverable. The API restores these records on startup. Tasks that were queued or executing during a restart are marked `failed` and receive an `execution_interrupted` event: the current in-process background runner cannot safely resume them. V2 in-memory records are not automatically backfilled into a database. With no `DATABASE_URL`, the app retains memory mode and its original restart-loss limitation.
+
 ## Preview limitations
-- Tasks and shared memory are process-local and clear after a service restart.
-- Background work runs in the API process, not a durable queue.
+- With no `DATABASE_URL`, tasks and shared memory are process-local and clear after a service restart.
+- Even with durable snapshots, background work runs in the API process, not a durable queue; interrupted work is marked failed, not resumed.
 - Up to eight specialists execute concurrently; four provider calls run concurrently per process.
 - Local task and provider budgets are process-local. Production needs durable identity, global quotas, and abuse controls.
 - The provider adapter currently supports text prompt/response translation for the three protocols above; native multimodal uploads, tools, and provider-native function calling are future work.

@@ -1,8 +1,12 @@
 import os
 import time
+from contextlib import asynccontextmanager
 from collections import defaultdict, deque
 
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -13,12 +17,21 @@ from .schemas import ApprovalRequest, PlanRequest, PlanResponse
 from .state import TASKS
 from .web_research import web_research_is_configured
 
-load_dotenv()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await TASKS.initialize()
+    try:
+        yield
+    finally:
+        await TASKS.close()
+
 
 app = FastAPI(
     title="Autonomous AI Workforce API",
-    version="0.2.0",
-    description="Approval-gated multi-agent task planning and execution preview.",
+    version="0.3.0",
+    description="Approval-gated multi-agent task planning with durable task history.",
+    lifespan=lifespan,
 )
 
 origins = [
@@ -57,13 +70,15 @@ async def root():
         "status": "ok",
         "health": "/health",
         "docs": "/docs",
-        "version": "0.2.0",
+        "version": "0.3.0",
+        "storage_backend": TASKS.storage_backend,
+        "durable_storage_configured": TASKS.durable_storage_configured,
     }
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "autonomous-ai-workforce-api", "version": "0.2.0"}
+    return {"status": "ok", "service": "autonomous-ai-workforce-api", "version": "0.3.0", "storage_backend": TASKS.storage_backend, "durable_storage_configured": TASKS.durable_storage_configured}
 
 
 @app.get("/api/config/status")
@@ -71,6 +86,8 @@ async def config_status():
     status = provider_status()
     status["web_research_configured"] = web_research_is_configured()
     status["web_research_provider"] = "tavily" if web_research_is_configured() else None
+    status["storage_backend"] = TASKS.storage_backend
+    status["durable_storage_configured"] = TASKS.durable_storage_configured
     return status
 
 
@@ -93,7 +110,7 @@ async def plan_task(request: PlanRequest, http_request: Request):
 async def get_task(task_id: str):
     task = await TASKS.get(task_id)
     if task is None:
-        raise HTTPException(status_code=404, detail="Task not found. Tasks are held in preview memory and may be cleared after a service restart.")
+        raise HTTPException(status_code=404, detail="Task not found. Check the task ID; tasks created before durable storage was configured are not backfilled.")
     return task
 
 

@@ -15,7 +15,15 @@ A multi-agent AI workforce platform that assembles specialists, coordinates thei
 - Server-side API credentials; provider quotas and limits are respected.
 - Login-free preview; optional persistent accounts are a later milestone.
 
-## Current milestone — V2 Agent Execution Preview + Provider Router
+## Current milestone — V3 Persistence Foundation
+- Mascot-driven robot floor with the supplied 3D characters and state-based animation (idle, active work, review, success, and recovery).
+- SQLAlchemy task snapshot persistence for PostgreSQL or SQLite when `DATABASE_URL` is configured.
+- API restart restores task history and explicitly marks interrupted in-process jobs as failed.
+- V2 approval-gated execution, specialist collaboration, provider routing, bounded research, independent QA, and exports remain the feature baseline.
+
+Configure `DATABASE_URL` in the backend environment to enable durable task history. PostgreSQL is recommended for hosting; SQLite is supported locally. The V3 database layer does not yet provide a durable background queue or automatic task resumption.
+
+## V2 Agent Execution Preview + Provider Router (foundation)
 - Provider-backed planning and approval-gated specialist execution.
 - Multi-endpoint routing for OpenAI-compatible Chat Completions, native Gemini generateContent, and Anthropic Messages APIs, ordered by priority.
 - Optional local hourly request caps, cooldowns, bounded retries, per-endpoint fallback models, and failover.
@@ -24,7 +32,7 @@ A multi-agent AI workforce platform that assembles specialists, coordinates thei
 - One bounded QA revision round.
 - Live status polling, activity timeline, shared-memory feed, and QA report in the frontend.
 
-**Important boundaries:** agents currently produce and review model-generated text. They do not yet have browser, filesystem, terminal, or external-action tools. The platform must not claim that websites were browsed, code was executed, messages were sent, or external facts were verified. QA is an independent AI content review, not deterministic proof of correctness. Tasks currently live in backend process memory and can be cleared by a service restart.
+**Important boundaries:** agents currently produce and review model-generated text. They do not yet have browser, filesystem, terminal, or external-action tools. The platform must not claim that websites were browsed, code was executed, messages were sent, or external facts were verified. QA is an independent AI content review, not deterministic proof of correctness. Task snapshots are durable only when `DATABASE_URL` is configured. The current background runner still lives in the API process; jobs interrupted by restart are marked failed and require a new run.
 
 ## Repository layout
 - `frontend/` — React, TypeScript, Vite.

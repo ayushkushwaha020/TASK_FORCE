@@ -8,7 +8,7 @@
 - [x] Demo vs provider-backed plan status
 - [x] Initial hosting on Render
 
-## V2 — Agent execution preview (current)
+## V2 — Agent execution preview (delivered foundation)
 - [x] Human approval before internal AI execution
 - [x] Parallel model-backed specialist workstreams
 - [x] Shared task memory
@@ -19,18 +19,24 @@
 - [x] One bounded revision cycle
 - [x] Bounded retry, optional fallback model, and one workstream reassignment
 - [x] Frontend polling, activity timeline, shared-memory feed, and QA view
-- [ ] Durable task persistence and background worker queue
-- [x] Capped Tavily search for research tasks with URL/snippet source capture\n- [x] Source-ID citations and independent QA integrity check\n- [x] Markdown download and browser print-to-PDF export\n- [ ] General browser navigation/page extraction
+- [ ] Durable background worker queue and event fanout (V3)
+- [x] Capped Tavily search for research tasks with URL/snippet source capture
+- [x] Source-ID citations and independent QA integrity check
+- [x] Markdown download and browser print-to-PDF export\n- [ ] General browser navigation/page extraction
 - [ ] Sandboxed code execution and deterministic test evidence
 - [ ] Human approval queue for external/destructive actions
-- [ ] Multi-provider quota-aware router
+- [x] Multi-provider quota-aware router
 
-## V3 — Tools and production controls
+## V3 — Persistence and production controls (in progress)
+- [x] SQLAlchemy-backed task persistence for PostgreSQL and SQLite via DATABASE_URL
+- [x] Restore task history, shared memory, messages, research sources, events, and deliverables after API restart
+- [x] Mark interrupted in-process jobs as failed with an explicit recovery event
+- [ ] Durable Redis worker/job queue and event fanout (next V3 slice)
 - [ ] Permission-scoped browser/search tools
 - [ ] Isolated code runner
 - [ ] File ingestion and document generation
 - [ ] Approval queue and audit trail
-- [ ] Postgres persistence and Redis job/event queue
+- [ ] Redis job/event queue and durable worker execution
 - [ ] User identities, quotas, and abuse protection
 - [ ] Cost and token budgets per task/team
 - [ ] Multi-provider adapter registry

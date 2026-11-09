@@ -86,9 +86,8 @@ button{cursor:pointer}
   .deliverable-content{display:block!important;max-height:none!important;overflow:visible!important;white-space:pre-wrap!important;border:0!important;background:#fff!important;color:#111!important;padding:14px 0!important;font:10pt/1.55 Arial,sans-serif!important}
 }
 
-/* One supplied mascot is used for every robot instance */
-.brand-mark.brand-mascot-mark{overflow:hidden}
-.brand-mascot-mark img{width:42px;height:42px;object-fit:contain;display:block}
+
+/* V3 supplied 3D mascot animation system */
 .robot{width:78px;height:96px;display:flex;align-items:center;justify-content:center;position:relative;animation:none}
 .robot-mascot{display:block;width:76px;height:96px;object-fit:contain;position:relative;z-index:2;transform-origin:center bottom;filter:drop-shadow(0 10px 14px #5ab9ed35);animation:mascot-float 3s ease-in-out infinite}
 .robot:nth-child(2n) .robot-mascot{animation-delay:-1s}
@@ -103,8 +102,6 @@ button{cursor:pointer}
 .team-robot-item .robot{width:60px;height:74px}
 .team-robot-item .robot-mascot{width:59px;height:74px}
 .team-robot-item .robot-shadow{width:34px;height:6px}
-.agent-avatar{overflow:hidden;background:transparent}
-.agent-avatar .agent-mascot-avatar{width:38px;height:38px;display:block;object-fit:contain}
 @keyframes mascot-float{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-6px) rotate(-1deg)}}
 @keyframes mascot-work{from{transform:translateY(0) rotate(-2deg)}to{transform:translateY(-9px) rotate(2deg)}}
 @keyframes mascot-scan{0%,100%{transform:translateX(0) rotate(0)}50%{transform:translateX(3px) rotate(1deg)}}
@@ -112,4 +109,11 @@ button{cursor:pointer}
 @keyframes mascot-success{0%{transform:scale(1)}40%{transform:translateY(-11px) rotate(5deg) scale(1.04)}100%{transform:scale(1)}}
 @keyframes mascot-shadow{0%,100%{transform:scaleX(1);opacity:.8}50%{transform:scaleX(.78);opacity:.48}}
 @media(max-width:620px){.robot{width:57px;height:73px}.robot-mascot{width:57px;height:73px}.robot-shadow{width:32px}.team-robot-item .robot{width:48px;height:61px}.team-robot-item .robot-mascot{width:48px;height:61px}}
+@media(prefers-reduced-motion:reduce){.robot,.robot-mascot,.robot-shadow{animation:none!important}}
+
+/* One supplied mascot is used for every robot instance */
+.brand-mark.brand-mascot-mark{overflow:hidden}
+.brand-mascot-mark img{width:42px;height:42px;object-fit:contain;display:block}
+.agent-avatar{overflow:hidden;background:transparent}
+.agent-avatar .agent-mascot-avatar{width:38px;height:38px;display:block;object-fit:contain}
 @media(prefers-reduced-motion:reduce){.robot,.robot-mascot,.robot-shadow{animation:none!important}}

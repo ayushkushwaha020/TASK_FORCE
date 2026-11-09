@@ -9,7 +9,7 @@ React Command Center / Workforce HQ
 FastAPI API
   |-- task planner and dynamic team composer
   |-- human approval gate
-  |-- process-local task state store
+  |-- SQLAlchemy task repository (PostgreSQL / SQLite when DATABASE_URL is set)
   |-- multi-protocol provider router
   |     |-- OpenAI-compatible Chat Completions
   |     |-- Google Gemini generateContent
@@ -57,9 +57,15 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 - Recovery by reassigning a failed specialist workstream once to a successful team member.
 - Frontend polling for live execution status and event feed.
 
+## V3 persistence foundation
+- The TaskStore keeps the existing async mutation interface and persists the full task snapshot to `workforce_tasks` through SQLAlchemy when `DATABASE_URL` is configured.
+- PostgreSQL uses asyncpg; SQLite uses aiosqlite for local development. Database credentials are never returned to the browser.
+- API startup restores snapshots. Queued/running/reviewing tasks are marked failed with an `execution_interrupted` event because FastAPI in-process jobs cannot be resumed safely.
+- Without `DATABASE_URL`, the app deliberately remains in memory mode. Existing V2 in-memory tasks are not backfilled into the database.
+
 ## Current preview limits
-- Task state and memory live in process memory. Restarts clear them; multiple API instances are not supported.
-- Background execution runs within the API service, not a durable queue.
+- Without `DATABASE_URL`, task state and memory live in process memory. With a configured database, snapshots survive restarts; multiple API instances still need a durable worker/locking design.
+- Background execution still runs within the API service, not a durable queue. A restart during execution marks that task failed; work is not resumed.
 - Native adapters currently handle text prompt/response calls. Native multimodal file uploads, browser/search tools, function calling, and terminal/code-execution tools are not yet connected.
 - No agent has browser, filesystem, terminal, shell, or external-service tools.
 - Provider output is model-generated text. The system must not claim code execution, website research, external verification, or completion of real-world actions.
