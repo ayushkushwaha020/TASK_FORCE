@@ -59,7 +59,7 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 
 ## V3 Supabase persistence foundation
 - The TaskStore keeps the existing async mutation interface and persists the full task snapshot to `workforce_tasks` through SQLAlchemy when `DATABASE_URL` is configured.
-- Supabase Postgres uses asyncpg and SSL; Render should use the Supabase Session Pooler (port 5432). Transaction pooler port 6543 is supported with asyncpg statement caching disabled. SQLite uses aiosqlite for local development. Database credentials are never returned to the browser.
+- Supabase Postgres uses asyncpg and SSL; Render should use the Supabase Transaction Pooler (port 6543), with SQLAlchemy and asyncpg prepared-statement caches disabled. Session pooler port 5432 is also supported. SQLite uses aiosqlite for local development. Database credentials are never returned to the browser.
 - Task data is stored in the non-exposed `workforce_private` schema. Row-level security is enabled and table/schema privileges are revoked from `PUBLIC`, `anon`, and `authenticated`; only the backend database connection can access the task snapshots.
 - API startup restores snapshots. Queued/running/reviewing tasks are marked failed with an `execution_interrupted` event because FastAPI in-process jobs cannot be resumed safely.
 - Without `DATABASE_URL`, the app deliberately remains in memory mode. Existing V2 in-memory tasks are not backfilled into the database.
