@@ -42,7 +42,6 @@
 **Files:**
 - Create: `backend/app/worker_coordination.py`
 - Test: `backend/tests/test_worker_coordination.py`
-- Test: `backend/tests/test_multi_instance_integration.py` (real-Redis lease cases are added here in Task 7)
 
 **Interfaces:**
 - Produce `TaskLease(task_id: str, owner_token: str, generation: int)`.
@@ -81,7 +80,7 @@ git commit -m "feat: add renewable task leases and fencing"
 - Modify: `backend/app/database.py`
 - Modify: `backend/app/schemas.py`
 - Create: `supabase/migrations/202611090002_multi_instance_task_fencing.sql`
-- Test: `backend/tests/test_database.py`
+- Modify: `backend/tests/test_database.py`
 - Modify: `backend/tests/test_state.py` only where fixtures need the new version field.
 
 **Interfaces:**
@@ -272,9 +271,9 @@ git commit -m "feat: reconcile SSE updates across API instances"
 - Create: `backend/tests/test_multi_instance_integration.py`
 - Modify: `backend/README.md`
 - Modify: `README.md`
-- Modify: `docs/architecture.md`
-- Modify: `docs/roadmap.md`
-- Modify: `docs/acceptance-checklist.md`
+- Modify: `docs/ARCHITECTURE.md`
+- Modify: `docs/ROADMAP.md`
+- Modify: `docs/ACCEPTANCE_CHECKLIST.md`
 - Modify: the existing backend CI workflow under `.github/workflows/` only after identifying its actual filename and current test command.
 
 **Interfaces:**
@@ -307,7 +306,7 @@ Expected: all existing and new unit tests pass; two-worker integration passes wi
 - [ ] **Step 8: Commit.**
 
 ```bash
-git add backend/tests/test_multi_instance_integration.py backend/README.md README.md docs/architecture.md docs/roadmap.md docs/acceptance-checklist.md .github/workflows
+git add backend/tests/test_multi_instance_integration.py backend/README.md README.md docs/architecture.md docs/ROADMAP.md docs/ACCEPTANCE_CHECKLIST.md .github/workflows
 git commit -m "test: verify multi-instance workforce coordination"
 ```
 
