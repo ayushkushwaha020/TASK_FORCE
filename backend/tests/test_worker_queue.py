@@ -8,8 +8,9 @@ from app.worker_queue import RedisStreamTaskQueue
 
 
 class FakeRedis:
-    def __init__(self, existing_group=False):
+    def __init__(self, existing_group=False, delivery_count=1):
         self.existing_group = existing_group
+        self.delivery_count = delivery_count
         self.groups = []
         self.entries = []
         self.acks = []
@@ -34,10 +35,13 @@ class FakeRedis:
         return "1000-0"
 
     async def xpending_range(self, name, group, min_id, max_id, count):
-        return [{"times_delivered": 1}]
+        return [{"times_delivered": self.delivery_count}]
 
     async def xack(self, name, group, message_id):
         self.acks.append(message_id)
+        return 1
+
+    async def xdel(self, name, message_id):
         return 1
 
     async def xautoclaim(self, *args, **kwargs):
@@ -104,6 +108,20 @@ class RedisQueueUnitTests(unittest.IsolatedAsyncioTestCase):
             await queue._process_message("1000-0", {"task_id": "missing-task"})
         self.assertEqual(redis.acks, ["1000-0"])
         self.assertEqual(redis.dead_letters[0]["task_id"], "missing-task")
+
+    async def test_overdelivered_message_moves_to_dead_letter_stream(self):
+        redis = FakeRedis(delivery_count=4)
+        queue = RedisStreamTaskQueue(redis_client=redis)
+        fake_store = SimpleNamespace(
+            get=AsyncMock(return_value=SimpleNamespace(execution_status="queued")),
+            update=AsyncMock(),
+            add_event=AsyncMock(),
+        )
+        with patch("app.state.TASKS", fake_store):
+            await queue._process_message("1000-0", {"task_id": "task-123"})
+        fake_store.update.assert_awaited_once_with("task-123", execution_status="failed", qa_status="rejected")
+        self.assertEqual(redis.dead_letters[0]["task_id"], "task-123")
+        self.assertEqual(redis.acks, ["1000-0"])
 
     async def test_status_reports_stream_and_pending_counts(self):
         redis = FakeRedis()
