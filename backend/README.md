@@ -13,49 +13,93 @@ uvicorn app.main:app --reload --port 8000
 
 ## API
 - `GET /health` — health check and API version.
-- `GET /api/config/status` — provider names, models, local budget usage, and status; never returns secrets.
+- `GET /api/config/status` — provider names, protocols, models, local budget usage, and status; never returns secrets.
 - `POST /api/tasks/plan` — create a proposed team plan. JSON: `{"instruction":"..." }`.
 - `GET /api/tasks/{task_id}` — poll task state, events, shared memory, messages, QA, and deliverable.
 - `POST /api/tasks/{task_id}/approval` — JSON `{"decision":"approve"}` or `{"decision":"reject","reason":"..." }`.
 
-## Multi-provider configuration
-The router accepts multiple **OpenAI-compatible Chat Completions endpoints** through server-side `AI_PROVIDERS_JSON`. Each entry needs:
-- `name`: display name, not a secret.
-- `base_url`: provider API base URL.
-- `api_key`: credential, kept server-side.
-- `model`: model identifier.
-- `priority`: lower values are tried first.
-- `max_requests_per_hour`: optional local per-process request cap.
-- `fallback_model`: optional model on the same endpoint.
+## Provider router
 
-Example structure (replace all example values with credentials and model identifiers issued by the provider):
+The same workforce pipeline can use these native protocols:
+
+| Protocol | Provider examples | Endpoint format |
+|---|---|---|
+| `openai_compatible` | OpenAI and compatible gateways | `/v1/chat/completions` |
+| `gemini_generate_content` | Google Gemini API | `/v1beta/models/{model}:generateContent` |
+| `anthropic_messages` | Anthropic Claude API | `/v1/messages` |
+
+The router accepts multiple endpoints through the server-only `AI_PROVIDERS_JSON` environment variable. Each provider entry requires `name`, `protocol`, `base_url`, `api_key`, and `model`. Optional fields are:
+- `priority`: lower values are tried first.
+- `max_requests_per_hour`: a local per-process request cap.
+- `fallback_model`: another model on the same provider endpoint.
+- `max_output_tokens`: per-request output cap (256–65,536).
+- `api_version`: used by Anthropic Messages; defaults to `2026-10-21`.
+
+Example (replace placeholder keys and model IDs with values from your own provider accounts):
 ```json
 [
   {
-    "name": "provider-one",
-    "base_url": "https://api.provider-one.example/v1",
+    "name": "gemini-main",
+    "protocol": "gemini_generate_content",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta",
+    "api_key": "YOUR_GEMINI_KEY",
+    "model": "YOUR_GEMINI_MODEL",
+    "priority": 10,
+    "max_requests_per_hour": 80
+  },
+  {
+    "name": "claude-main",
+    "protocol": "anthropic_messages",
+    "base_url": "https://api.anthropic.com",
+    "api_key": "YOUR_ANTHROPIC_KEY",
+    "model": "YOUR_CLAUDE_MODEL",
+    "api_version": "2026-10-21",
+    "max_output_tokens": 4096,
+    "priority": 20,
+    "max_requests_per_hour": 40
+  },
+  {
+    "name": "openai-compatible",
+    "protocol": "openai_compatible",
+    "base_url": "https://api.openai.com/v1",
     "api_key": "YOUR_PROVIDER_KEY",
     "model": "YOUR_MODEL_ID",
-    "priority": 10,
-    "max_requests_per_hour": 30
+    "priority": 30,
+    "max_requests_per_hour": 100
   }
 ]
 ```
 
-The router sorts configured endpoints by priority, tracks optional local request budgets, applies bounded retries, and moves to another configured endpoint when one is unavailable or responds with a rate-limit error. It does not rotate multiple credentials for the same provider to bypass a provider limit. Local counters are a preview safeguard, not an authoritative view of the provider's remaining quota. The provider's own limits and terms still apply.
+For a single endpoint, the legacy environment variables remain supported:
+- `AI_API_KEY`
+- `AI_PROVIDER_PROTOCOL` (defaults to `openai_compatible`)
+- `AI_API_BASE_URL`
+- `AI_MODEL`
+- `AI_FALLBACK_MODEL`
+- `AI_API_VERSION`
+- `AI_MAX_OUTPUT_TOKENS`
 
-For one endpoint, the legacy `AI_API_KEY`, `AI_API_BASE_URL`, and `AI_MODEL` variables remain supported. Optionally set `AI_FALLBACK_MODEL`.
+The router tries endpoints in priority order, applies bounded retries, observes provider 429 responses with a cooldown, and moves to the next configured endpoint when an endpoint is unavailable or has exhausted its local budget. Each underlying request, retry, and fallback attempt counts against the local provider cap. Local counters are process-local safeguards, not authoritative views of provider quota. Provider-specific limits, billing, terms, and free-tier rules still apply. The router is not designed to bypass provider quotas.
+
+Gemini API keys must be kept server-side and secured/restricted according to Google's current key guidance. New AI Studio keys and standard-key restrictions have changed during 2026; do not rely on an unrestricted legacy key.
+
+Native API references:
+- Gemini: https://ai.google.dev/api/generate-content
+- Gemini API key guidance: https://ai.google.dev/gemini-api/docs/api-key
+- Anthropic Messages: https://platform.claude.com/docs/en/api/messages/create
 
 ## Agent execution
-Without a provider, the planner returns a clearly labelled local demo plan. Demo plans cannot be executed as live AI work. After a provider-backed plan is approved, the service runs specialist model calls in parallel, stores outputs in shared task memory, asks the team director to compare contributions, compiles a draft, and submits it to an independent QA role. QA can request one bounded revision round.
 
-Agents do not yet have browser, filesystem, terminal, or external-action tools. They must not claim to have run code, browsed websites, contacted anyone, or verified external facts. AI QA is not a substitute for deterministic tests or human review.
+Without configured providers, the planner returns a clearly labelled local demo plan. Demo plans cannot be executed as live AI work. After a provider-backed plan is approved, the service runs specialist model calls in parallel, stores outputs in shared task memory, asks the team director to compare contributions, compiles a draft, and submits it to an independent QA role. QA can request one bounded revision round.
+
+Agents do not yet have browser, filesystem, terminal, or external-action tools. They must not claim to have run code, browsed websites, contacted anyone, or verified external facts. AI QA is not a substitute for deterministic tests or human review. Model-generated content and shared memory are treated as untrusted data, not authority to change system safeguards.
 
 ## Preview limitations
 - Tasks and shared memory are process-local and clear after a service restart.
 - Background work runs in the API process, not a durable queue.
-- Up to eight specialists execute concurrently; four provider calls run concurrently.
-- A small in-memory rate limit and local provider request caps are enabled. Production needs durable identity, quotas, and abuse controls.
+- Up to eight specialists execute concurrently; four provider calls run concurrently per process.
+- Local task and provider budgets are process-local. Production needs durable identity, global quotas, and abuse controls.
+- The provider adapter currently supports text prompt/response translation for the three protocols above; native multimodal uploads, tools, and provider-native function calling are future work.
 
 ## Render
 The service is deployed from the repository root:
