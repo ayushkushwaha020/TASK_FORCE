@@ -17,7 +17,7 @@ A multi-agent AI workforce platform that assembles specialists, coordinates thei
 
 ## Current milestone — V2 Agent Execution Preview + Provider Router
 - Provider-backed planning and approval-gated specialist execution.
-- Multi-endpoint routing for OpenAI-compatible Chat Completions APIs, ordered by priority.
+- Multi-endpoint routing for OpenAI-compatible Chat Completions, native Gemini generateContent, and Anthropic Messages APIs, ordered by priority.
 - Optional local hourly request caps, cooldowns, bounded retries, per-endpoint fallback models, and failover.
 - Parallel specialist outputs, shared memory, structured messages, and team deliberation.
 - Integrated draft deliverable and independent QA review.
@@ -51,7 +51,7 @@ uvicorn app.main:app --reload --port 8000
 Set `VITE_API_BASE_URL=http://localhost:8000` in `frontend/.env.local` if needed.
 
 ## AI provider configuration
-Copy `backend/.env.example` to `backend/.env`. Configure one endpoint with `AI_API_KEY`, `AI_MODEL`, and optionally `AI_API_BASE_URL` and `AI_FALLBACK_MODEL`, or several OpenAI-compatible endpoints with server-side `AI_PROVIDERS_JSON`. Per-endpoint `priority`, optional `max_requests_per_hour`, and `fallback_model` are supported. Provider quotas still apply; local caps are a preview safeguard and do not represent remaining provider quota. Keep credentials server-side only. Never commit real keys. Native Gemini/Anthropic protocol adapters are future work.
+Copy `backend/.env.example` to `backend/.env`. Configure one endpoint with `AI_API_KEY`, `AI_MODEL`, and optionally `AI_API_BASE_URL` and `AI_FALLBACK_MODEL`, or several endpoints with server-side `AI_PROVIDERS_JSON` using `openai_compatible`, `gemini_generate_content`, or `anthropic_messages` protocols. Per-endpoint `priority`, optional `max_requests_per_hour`, and `fallback_model` are supported. Provider quotas still apply; local caps are a preview safeguard and do not represent remaining provider quota. Keep credentials server-side only. Never commit real keys. Native Gemini/Anthropic protocol adapters are future work.
 
 Without an API key, the app can create clearly labelled demo plans but cannot start live specialist execution.
 
