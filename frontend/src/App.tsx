@@ -121,6 +121,7 @@ export default function App() {
   useEffect(() => {
     if (!taskId || !executionStatus || terminalStatuses.includes(executionStatus) || executionStatus === "awaiting_approval") return;
     let cancelled = false;
+    let fallbackTimer: number | undefined;
     const poll = async () => {
       try {
         const response = await fetch(API_BASE + "/api/tasks/" + taskId);
@@ -131,9 +132,29 @@ export default function App() {
         // Keep the last known task snapshot visible while the API is temporarily unavailable.
       }
     };
-    void poll();
-    const timer = window.setInterval(poll, 2500);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    const startPollingFallback = () => {
+      if (fallbackTimer !== undefined || cancelled) return;
+      void poll();
+      fallbackTimer = window.setInterval(poll, 2500);
+    };
+    if (typeof window.EventSource === "function") {
+      const stream = new EventSource(API_BASE + "/api/tasks/" + taskId + "/stream");
+      stream.addEventListener("task_update", () => { void poll(); });
+      stream.onerror = () => {
+        stream.close();
+        startPollingFallback();
+      };
+      return () => {
+        cancelled = true;
+        stream.close();
+        if (fallbackTimer !== undefined) window.clearInterval(fallbackTimer);
+      };
+    }
+    startPollingFallback();
+    return () => {
+      cancelled = true;
+      if (fallbackTimer !== undefined) window.clearInterval(fallbackTimer);
+    };
   }, [taskId, executionStatus]);
 
   function downloadDeliverableMarkdown() {
