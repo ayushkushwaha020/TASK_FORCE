@@ -10,6 +10,7 @@ load_dotenv()
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from .execution import execute_task
 from .orchestrator import create_plan
@@ -145,6 +146,73 @@ async def get_task(task_id: str):
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found. Check the task ID; tasks created before durable storage was configured are not backfilled.")
     return task
+
+
+async def _task_event_generator(task_id: str, http_request: Request):
+    """Stream task activity events and compact update notifications over SSE."""
+    task = await TASKS.get(task_id)
+    if task is None:
+        yield "event: task_error\\ndata: {\"detail\":\"Task not found.\"}\\n\\n"
+        return
+
+    last_event_id = http_request.headers.get("last-event-id") or http_request.query_params.get("after") or ""
+    last_index = len(task.events)
+    if last_event_id:
+        positions = [index for index, item in enumerate(task.events) if item.id == last_event_id]
+        last_index = positions[-1] + 1 if positions else max(0, len(task.events) - 10)
+    last_updated = task.updated_at
+    last_heartbeat = time.monotonic()
+
+    while True:
+        if await http_request.is_disconnected():
+            break
+        task = await TASKS.get(task_id)
+        if task is None:
+            yield "event: task_error\\ndata: {\"detail\":\"Task no longer exists.\"}\\n\\n"
+            break
+
+        new_events = task.events[last_index:]
+        for item in new_events:
+            payload = item.model_dump(mode="json")
+            yield f"id: {item.id}\\nevent: task_event\\ndata: {json.dumps(payload, ensure_ascii=False)}\\n\\n"
+        last_index = len(task.events)
+
+        changed = bool(new_events) or task.updated_at != last_updated
+        if changed:
+            update_payload = {
+                "task_id": task.task_id,
+                "updated_at": task.updated_at,
+                "execution_status": task.execution_status,
+                "approval_status": task.approval_status,
+                "qa_status": task.qa_status,
+                "event_count": len(task.events),
+            }
+            yield f"event: task_update\\ndata: {json.dumps(update_payload, ensure_ascii=False)}\\n\\n"
+            last_updated = task.updated_at
+
+        if task.execution_status in {"completed", "revision_required", "failed", "rejected", "cancelled"}:
+            break
+
+        if time.monotonic() - last_heartbeat >= 15:
+            yield ": workforce stream alive\\n\\n"
+            last_heartbeat = time.monotonic()
+        await asyncio.sleep(1)
+
+
+@app.get("/api/tasks/{task_id}/stream")
+async def stream_task_events(task_id: str, http_request: Request):
+    task = await TASKS.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    return StreamingResponse(
+        _task_event_generator(task_id, http_request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/tasks/{task_id}/approval", response_model=PlanResponse)
