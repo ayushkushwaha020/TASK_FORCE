@@ -126,6 +126,16 @@ The current runner still uses FastAPI background tasks. If the API restarts duri
 
 Set `DATABASE_URL` in Render Dashboard → backend service → Environment. Never paste the database password into chat, GitHub, or browser code.
 
+## Durable Redis Streams worker queue (V3 slice)
+
+To enable durable approved-task delivery, configure both `DATABASE_URL` (Supabase Postgres) and `REDIS_URL` (Upstash Redis TLS URL) on the backend. The queue is deliberately disabled unless both values are configured; Redis alone is rejected because a queued message without a durable task snapshot cannot survive an API restart.
+
+Approved plans are appended to the `workforce:approved-tasks` stream and consumed by a Redis consumer group. Pending entries can be reclaimed after the configured idle interval (`WORKFORCE_QUEUE_CLAIM_IDLE_MS`, default 15 minutes). The worker acknowledges a message only after the task reaches a terminal state. Repeated delivery failures are capped and moved to the `workforce:dead-tasks` dead-letter stream.
+
+The current preview runs one queue consumer inside the FastAPI service. This demonstrates durable queueing and process-restart reclamation without requiring a separate paid worker service. Do not scale the API horizontally yet: multi-instance execution needs distributed job leases/heartbeats, worker concurrency coordination, and duplicate-execution protection. The existing provider router remains separately rate-limited; a Redis-backed shared quota counter is not yet implemented.
+
+Upstash Redis Free currently lists 500,000 commands/month, 256 MB data, and 10 GB monthly bandwidth. XADD/XREADGROUP/XPENDING/XAUTOCLAIM/XACK operations consume that allowance; monitor usage in the Upstash console. https://upstash.com/pricing/redis
+
 ## Preview limitations
 - With no `DATABASE_URL`, tasks and shared memory are process-local and clear after a service restart.
 - Even with durable snapshots, background work runs in the API process, not a durable queue; interrupted work is marked failed, not resumed.
