@@ -122,6 +122,8 @@ export default function App() {
   const [view, setView] = useState<"chat" | "workspace" | "settings">("chat");
   const [prompt, setPrompt] = useState("");
   const [plan, setPlan] = useState<TaskPlan | null>(null);
+  const [restoringTask, setRestoringTask] = useState(true);
+  const [restoreHadError, setRestoreHadError] = useState(false);
   const [loading, setLoading] = useState(false);
   const [approvalLoading, setApprovalLoading] = useState(false);
   const [error, setError] = useState("");
@@ -155,6 +157,58 @@ export default function App() {
       })
       .catch(() => setProviderConfigured(null));
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const urlTaskId = new URLSearchParams(window.location.search).get("task_id");
+    const storedTaskId = window.localStorage.getItem("workforce.ai.currentTaskId");
+    const taskIdToRestore = urlTaskId || storedTaskId;
+    if (!taskIdToRestore) {
+      setRestoringTask(false);
+      return;
+    }
+
+    fetch(API_BASE + "/api/tasks/" + encodeURIComponent(taskIdToRestore))
+      .then((response) => {
+        if (response.status === 404) {
+          window.localStorage.removeItem("workforce.ai.currentTaskId");
+          const url = new URL(window.location.href);
+          url.searchParams.delete("task_id");
+          window.history.replaceState(null, "", url.toString());
+          throw new Error("The saved mission could not be found.");
+        }
+        if (!response.ok) throw new Error("Mission restore failed (" + response.status + ")");
+        return response.json() as Promise<TaskPlan>;
+      })
+      .then((savedTask) => {
+        if (cancelled) return;
+        setPlan(savedTask);
+        setView("workspace");
+      })
+      .catch((restoreError) => {
+        if (cancelled) return;
+        setRestoreHadError(true);
+        setError(restoreError instanceof Error ? restoreError.message : "Unable to restore the saved mission.");
+      })
+      .finally(() => {
+        if (!cancelled) setRestoringTask(false);
+      });
+
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (restoringTask || restoreHadError) return;
+    const url = new URL(window.location.href);
+    if (plan?.task_id) {
+      window.localStorage.setItem("workforce.ai.currentTaskId", plan.task_id);
+      url.searchParams.set("task_id", plan.task_id);
+    } else {
+      window.localStorage.removeItem("workforce.ai.currentTaskId");
+      url.searchParams.delete("task_id");
+    }
+    window.history.replaceState(null, "", url.toString());
+  }, [restoringTask, restoreHadError, plan?.task_id]);
 
   const taskId = plan?.task_id;
   const executionStatus = plan?.execution_status;
