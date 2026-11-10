@@ -4,7 +4,7 @@ import re
 import uuid
 from typing import Any
 
-from .providers import parse_json_object, provider_is_configured, request_completion
+from .providers import parse_json_object, provider_availability, provider_is_configured, request_completion
 from .schemas import PlanResponse
 from .state import TASKS
 from .web_research import collect_research
@@ -95,6 +95,26 @@ def _unique_owner_assignment(task: PlanResponse, agent: dict[str, Any]) -> list[
         and not _is_qa_subtask(subtask, _qa_agent(task))
     ]
     return matches if len(matches) == 1 else []
+
+
+def _restore_completed_specialist_results(task: PlanResponse, workers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rehydrate successful specialist work from durable shared memory on retry."""
+    restored: list[dict[str, Any]] = []
+    for agent in workers:
+        name = str(agent.get("name", ""))
+        expected_title = (
+            f"Recovered work for {name}" if agent.get("status") == "reassigned"
+            else f"{agent.get('role', 'Specialist')} findings"
+        )
+        entry = next((
+            item for item in reversed(task.shared_memory)
+            if item.title.casefold() == expected_title.casefold()
+            and (agent.get("status") == "reassigned" or item.source_agent == name)
+            and item.content.strip()
+        ), None)
+        if entry is not None and agent.get("status") in {"completed", "reassigned"}:
+            restored.append({"agent": agent, "output": entry.content, "error": None, "restored": True})
+    return restored
 
 
 async def _mark_assigned_subtasks_in_progress(task_id: str, task: PlanResponse, agents: list[dict[str, Any]]) -> None:
@@ -245,6 +265,15 @@ async def _recover_failed_workers(task_id: str, task: PlanResponse, results: lis
     failed = [item for item in results if item.get("error")]
     successful = [item for item in results if not item.get("error") and item.get("output") ]
     if not failed:
+        return results
+    availability = provider_availability()
+    if availability.get("available_provider_count", 0) <= 0:
+        retry_after = availability.get("retry_after_seconds")
+        detail = f"All configured providers are cooling down or budget-limited; retry is deferred{f' for about {retry_after}s' if retry_after else ''}."
+        await TASKS.add_event(
+            task_id, "Workforce Manager", "recovery_deferred",
+            detail + " Failed workstreams remain retryable; successful specialist outputs are preserved.",
+        )
         return results
     backup = next((item["agent"] for item in successful if "director" in item["agent"].get("role", "").lower() or "manager" in item["agent"].get("role", "").lower()), None)
     backup = backup or (successful[0]["agent"] if successful else None)
@@ -451,16 +480,26 @@ async def _execute_task(task_id: str) -> None:
                 assert task is not None
             qa = _qa_agent(task)
             workers = [agent.model_dump() for agent in task.agents if agent.id != qa["id"] and "qa" not in agent.role.lower() and "verif" not in agent.role.lower()]
-            active = workers[:MAX_ACTIVE_SPECIALISTS]
-            idle = workers[MAX_ACTIVE_SPECIALISTS:]
+            # Successful workstreams are durable checkpoints. A retry reuses their
+            # shared-memory output and calls the provider only for unfinished roles.
+            restored_results = _restore_completed_specialist_results(task, workers)
+            restored_ids = {item["agent"]["id"] for item in restored_results}
+            remaining_workers = [agent for agent in workers if agent["id"] not in restored_ids]
+            active = remaining_workers[:MAX_ACTIVE_SPECIALISTS]
+            idle = remaining_workers[MAX_ACTIVE_SPECIALISTS:]
             for agent in idle:
                 await TASKS.update_agent(task_id, agent["id"], status="standby")
             await TASKS.update_agent(task_id, qa["id"], status="waiting_for_review")
-            if not active:
-                raise RuntimeError("The approved team has no execution specialists.")
-            await TASKS.add_event(task_id, "Workforce Manager", "team_activated", f"Activated {len(active)} specialists in parallel; {len(idle)} additional team members remain on standby to control provider usage.")
+            if not active and not restored_results:
+                raise RuntimeError("The approved team has no execution specialists with pending or completed work.")
+            await TASKS.add_event(
+                task_id, "Workforce Manager", "team_activated",
+                f"Resumed {len(restored_results)} completed specialist checkpoint(s); activated {len(active)} unfinished specialist(s). "
+                f"{len(idle)} additional team members remain on standby.",
+            )
             await _mark_assigned_subtasks_in_progress(task_id, task, active)
-            results = await asyncio.gather(*[_run_specialist(task_id, task, agent) for agent in active])
+            new_results = await asyncio.gather(*[_run_specialist(task_id, task, agent) for agent in active]) if active else []
+            results = restored_results + new_results
             results = await _recover_failed_workers(task_id, task, results)
             # Reconcile each unambiguous owner's subtask even when another worker
             # failed. Successful outputs must not remain "in progress" just because
