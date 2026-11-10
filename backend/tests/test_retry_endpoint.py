@@ -66,6 +66,27 @@ class RetryEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(subtasks["s2"].output)
         self.assertEqual(len(background.tasks), 1)
 
+    async def test_retry_resets_provider_blocked_agents_and_subtasks(self):
+        task = self.make_failed_task().model_copy(update={
+            "agents": [
+                self.make_failed_task().agents[0],
+                AgentPlan(id="ops", name="Operations Planner", role="Operations Specialist", personality="methodical", task="Prepare checklist.", status="blocked_by_provider"),
+                self.make_failed_task().agents[2],
+            ],
+            "subtasks": [
+                SubtaskPlan(id="s1", title="Project coordination", owner="Project Director", status="completed", output="Saved director output"),
+                SubtaskPlan(id="s2", title="Operations checklist", owner="Operations Planner", status="blocked_by_provider", output="Gemini daily quota exhausted"),
+            ],
+        })
+        await TASKS.create(task)
+        with patch("app.main.provider_availability", return_value={"configured": True, "available_provider_count": 1}), patch("app.main.TASK_QUEUE", None):
+            result = await main.retry_task(task.task_id, BackgroundTasks(), self.make_request())
+        agents = {item.id: item for item in result.agents}
+        subtasks = {item.id: item for item in result.subtasks}
+        self.assertEqual(agents["ops"].status, "planned")
+        self.assertEqual(subtasks["s2"].status, "planned")
+        self.assertIsNone(subtasks["s2"].output)
+
     async def test_retry_is_blocked_when_all_configured_providers_are_cooling_down(self):
         task = self.make_failed_task()
         await TASKS.create(task)

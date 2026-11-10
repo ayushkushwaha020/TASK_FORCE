@@ -207,6 +207,38 @@ class ExecutionPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(event.kind == "recovery_deferred" for event in (await TASKS.get(plan.task_id)).events))
         self.assertEqual(updated[1]["error"], "provider rate limit response")
 
+    async def test_specialist_blocked_by_provider_is_not_marked_as_execution_failure(self):
+        from app.execution import _run_specialist
+        from app.providers import ProviderUnavailableError
+        plan = self.make_plan()
+        await TASKS.create(plan)
+        agent = plan.agents[1].model_dump()
+        with patch("app.execution.request_completion", side_effect=ProviderUnavailableError(
+            "Daily quota exhausted; retry after about 51897 seconds.",
+            retry_after_seconds=51897, reason="daily_quota",
+        )):
+            result = await _run_specialist(plan.task_id, plan, agent)
+        current = await TASKS.get(plan.task_id)
+        assert current is not None
+        updated = next(item for item in current.agents if item.id == agent["id"])
+        self.assertEqual(updated.status, "blocked_by_provider")
+        self.assertTrue(result["deferred"])
+        self.assertTrue(any(event.kind == "agent_deferred" for event in current.events))
+        self.assertFalse(any(event.kind == "agent_failed" for event in current.events))
+
+    async def test_provider_blocked_owner_subtask_is_not_marked_failed(self):
+        from app.execution import _record_specialist_subtasks
+        plan = self.make_plan().model_copy(update={
+            "subtasks": [SubtaskPlan(id="ops", title="Operations", owner="Operations Planner", status="in_progress")]
+        })
+        await TASKS.create(plan)
+        await _record_specialist_subtasks(plan.task_id, plan, [{
+            "agent": plan.agents[1].model_dump(), "output": "", "error": "Daily quota exhausted", "deferred": True,
+        }])
+        result = await TASKS.get(plan.task_id)
+        assert result is not None
+        self.assertEqual(result.subtasks[0].status, "blocked_by_provider")
+
     async def test_subtasks_are_not_completed_by_result_position_or_ambiguous_owner(self):
         from app.execution import _record_specialist_subtasks
 

@@ -4,7 +4,7 @@ import re
 import uuid
 from typing import Any
 
-from .providers import parse_json_object, provider_availability, provider_is_configured, request_completion
+from .providers import ProviderUnavailableError, parse_json_object, provider_availability, provider_is_configured, request_completion
 from .schemas import PlanResponse
 from .state import TASKS
 from .web_research import collect_research
@@ -129,7 +129,13 @@ async def _record_specialist_subtasks(task_id: str, task: PlanResponse, results:
         agent = item["agent"]
         matches = _unique_owner_assignment(task, agent)
         for subtask in matches:
-            if item.get("error") or not str(item.get("output", "")).strip():
+            if item.get("deferred"):
+                reason = str(item.get("error") or "The shared AI provider is temporarily unavailable")[:900]
+                output = f"[{agent['name']}] Blocked by provider availability: {reason}"
+                await TASKS.update_subtask(
+                    task_id, subtask.id, status="blocked_by_provider", output=output[:10000]
+                )
+            elif item.get("error") or not str(item.get("output", "")).strip():
                 reason = str(item.get("error") or item.get("error_type") or "No output was returned")[:900]
                 output = f"[{agent['name']}] Execution failed: {reason}"
                 await TASKS.update_subtask(
@@ -251,6 +257,17 @@ async def _run_specialist(task_id: str, task: PlanResponse, agent: dict[str, Any
         await TASKS.add_message(task_id, name, "Team Director", "workstream_result", output[:5000])
         await TASKS.add_event(task_id, name, "agent_completed", f"{name} delivered its specialist findings to shared team memory.")
         return {"agent": agent, "output": output, "error": None}
+    except ProviderUnavailableError as exc:
+        detail = _safe_error_detail(exc)
+        await TASKS.update_agent(task_id, agent_id, status="blocked_by_provider")
+        await TASKS.add_event(
+            task_id, name, "agent_deferred",
+            f"{name} was not run because the shared provider is unavailable: {detail}",
+        )
+        return {
+            "agent": agent, "output": "", "error": detail,
+            "error_type": type(exc).__name__, "deferred": True,
+        }
     except Exception as exc:
         detail = _safe_error_detail(exc)
         await TASKS.update_agent(task_id, agent_id, status="failed")
@@ -262,9 +279,19 @@ async def _run_specialist(task_id: str, task: PlanResponse, agent: dict[str, Any
 
 
 async def _recover_failed_workers(task_id: str, task: PlanResponse, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    failed = [item for item in results if item.get("error")]
+    failed = [item for item in results if item.get("error") and not item.get("deferred")]
+    deferred = [item for item in results if item.get("deferred")]
     successful = [item for item in results if not item.get("error") and item.get("output") ]
     if not failed:
+        if deferred:
+            availability = provider_availability()
+            retry_after = availability.get("retry_after_seconds")
+            label = availability.get("blocked_label") or "Provider temporarily unavailable"
+            await TASKS.add_event(
+                task_id, "Workforce Manager", "recovery_deferred",
+                f"{len(deferred)} workstream(s) were blocked by {label.lower()}; no redundant reassignment requests were sent. "
+                + (f"Retry after about {retry_after} seconds." if retry_after else "Retry when provider capacity returns."),
+            )
         return results
     availability = provider_availability()
     if availability.get("available_provider_count", 0) <= 0:

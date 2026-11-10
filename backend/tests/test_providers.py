@@ -21,6 +21,7 @@ class ProviderRouterTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         providers._provider_usage.clear()
         providers._provider_cooldowns.clear()
+        providers._provider_cooldown_info.clear()
         providers._provider_next_request_at.clear()
         providers._provider_locks.clear()
         self.pacing_env = patch.dict(os.environ, {
@@ -81,6 +82,72 @@ class ProviderRouterTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.dict(os.environ, {"AI_PROVIDER_DAILY_QUOTA_COOLDOWN_SECONDS": "1800"}):
             self.assertEqual(providers._cooldown_seconds_from_response(response), 1800)
+
+    async def test_gemini_quota_reset_metadata_is_classified_as_daily_quota(self):
+        request = httpx.Request("POST", "https://provider.example/generateContent")
+        response = httpx.Response(429, json={
+            "error": {
+                "code": 429,
+                "message": "Quota exhausted.",
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [
+                    {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{
+                        "quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+                        "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+                    }]},
+                    {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "QUOTA_EXHAUSTED", "metadata": {
+                        "quotaResetDelay": "51897s",
+                    }},
+                    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "1s"},
+                ],
+            }
+        }, request=request)
+        info = providers._provider_429_diagnostics(response)
+        self.assertEqual(info["kind"], "daily_quota")
+        self.assertEqual(info["label"], "Daily quota exhausted")
+        self.assertEqual(info["quota_id"], "GenerateRequestsPerDayPerModel-FreeTier".replace("PerDayPerModel", "PerDayPerProjectPerModel"))
+        self.assertEqual(info["retry_after_seconds"], 51897)
+        self.assertEqual(providers._cooldown_seconds_from_response(response), 51897)
+
+    async def test_request_completion_raises_structured_daily_quota_error(self):
+        provider = {
+            "name": "gemini-main", "protocol": "gemini_generate_content", "base_url": "https://gemini.example/v1beta",
+            "api_key": "secret", "model": "gemini-test", "max_requests_per_hour": None,
+            "max_requests_per_minute": 120, "min_request_interval_seconds": 0,
+        }
+        request = httpx.Request("POST", "https://gemini.example/v1beta/models/gemini-test:generateContent")
+        response = httpx.Response(429, json={"error": {"details": [
+            {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{
+                "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+                "quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+            }]},
+            {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "QUOTA_EXHAUSTED", "metadata": {"quotaResetDelay": "51897s"}},
+            {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "1s"},
+        ]}}, request=request)
+        error = httpx.HTTPStatusError("quota exhausted", request=request, response=response)
+        with patch("app.providers._provider_registry", return_value=[provider]), patch(
+            "app.providers._call_model", new=AsyncMock(side_effect=error)
+        ):
+            with self.assertRaises(providers.ProviderUnavailableError) as raised:
+                await providers.request_completion([{"role": "user", "content": "hello"}])
+            status = providers.provider_status()
+        self.assertEqual(raised.exception.reason, "daily_quota")
+        self.assertEqual(raised.exception.retry_after_seconds, 51897)
+        self.assertEqual(status["providers"][0]["cooldown_info"]["label"], "Daily quota exhausted")
+
+    async def test_daily_quota_ignores_misleading_one_second_retryinfo_without_reset_metadata(self):
+        request = httpx.Request("POST", "https://provider.example/generateContent")
+        response = httpx.Response(429, json={
+            "error": {"details": [
+                {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{
+                    "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+                }]},
+                {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "1s"},
+            ]}
+        }, request=request)
+        info = providers._provider_429_diagnostics(response)
+        self.assertEqual(info["kind"], "daily_quota")
+        self.assertGreater(info["retry_after_seconds"], 300)
 
     async def test_single_provider_calls_are_serialized(self):
         provider = {

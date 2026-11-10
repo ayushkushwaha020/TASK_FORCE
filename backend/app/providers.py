@@ -7,12 +7,14 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
 
 _provider_usage: dict[str, deque[float]] = defaultdict(deque)
 _provider_cooldowns: dict[str, float] = {}
+_provider_cooldown_info: dict[str, dict[str, Any]] = {}
 _provider_next_request_at: dict[str, float] = {}
 _provider_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 _usage_window_seconds = 3600
@@ -22,9 +24,11 @@ _minute_window_seconds = 60
 class ProviderUnavailableError(RuntimeError):
     """All configured providers are cooling down or have exhausted local budgets."""
 
-    def __init__(self, message: str, *, retry_after_seconds: int | None = None):
+    def __init__(self, message: str, *, retry_after_seconds: int | None = None, reason: str | None = None, quota_metric: str | None = None):
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
+        self.reason = reason
+        self.quota_metric = quota_metric
 
 
 def _provider_registry() -> list[dict[str, Any]]:
@@ -152,6 +156,7 @@ def provider_status() -> dict[str, Any]:
                 "min_request_interval_seconds": provider.get("min_request_interval_seconds", 15),
                 "cooling_down": cooldown_seconds > 0,
                 "cooldown_seconds": cooldown_seconds,
+                "cooldown_info": _provider_cooldown_info.get(provider["name"], {}),
                 "ready": ready,
             })
         return {
@@ -191,22 +196,134 @@ def _reserve_provider(provider: dict[str, Any]) -> bool:
     return True
 
 
-def _cooldown_seconds_from_response(response: httpx.Response) -> int:
-    """Prefer explicit provider retry timing; fall back to a conservative cooldown."""
-    fallback = max(30, min(900, int(os.getenv("AI_PROVIDER_429_COOLDOWN_SECONDS", "60"))))
-    retry_after = response.headers.get("Retry-After")
-    if retry_after:
-        try:
-            return max(1, min(86400, int(float(retry_after))))
-        except ValueError:
+def _provider_429_diagnostics(response: httpx.Response) -> dict[str, Any]:
+    """Extract quota type and reset metadata without retaining raw provider payloads."""
+    try:
+        body = response.json()
+    except (ValueError, TypeError):
+        body = {}
+    details = body.get("error", {}).get("details", []) if isinstance(body, dict) else []
+    quota_ids: list[str] = []
+    quota_metrics: list[str] = []
+    reset_delays: list[int] = []
+    reset_timestamps: list[float] = []
+    retry_delays: list[int] = []
+    error_reasons: list[str] = []
+
+    def parse_duration(value: Any) -> int | None:
+        match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|m|min|minutes?|h|hours?)?\s*", str(value), re.I)
+        if not match:
+            return None
+        amount = float(match.group(1))
+        unit = (match.group(2) or "s").casefold()
+        factor = 0.001 if unit == "ms" else 60 if unit in {"m", "min", "minute", "minutes"} else 3600 if unit in {"h", "hour", "hours"} else 1
+        return max(1, min(86400, int(amount * factor + 0.999)))
+
+    for item in details if isinstance(details, list) else []:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("@type", "")).rsplit(".", 1)[-1]
+        if kind == "QuotaFailure":
+            for violation in item.get("violations", []):
+                if not isinstance(violation, dict):
+                    continue
+                if violation.get("quotaId"):
+                    quota_ids.append(str(violation["quotaId"])[:180])
+                if violation.get("quotaMetric"):
+                    quota_metrics.append(str(violation["quotaMetric"])[:180])
+        elif kind == "RetryInfo":
+            delay = parse_duration(item.get("retryDelay"))
+            if delay is not None:
+                retry_delays.append(delay)
+        elif kind == "ErrorInfo":
+            reason = item.get("reason")
+            if reason:
+                error_reasons.append(str(reason)[:100])
+            metadata = item.get("metadata", {})
+            if isinstance(metadata, dict):
+                for key in ("quotaResetDelay", "retryDelay", "retry_after"):
+                    if metadata.get(key) is not None:
+                        delay = parse_duration(metadata[key])
+                        if delay is not None:
+                            reset_delays.append(delay)
+                reset_at = metadata.get("quotaResetTimeStamp") or metadata.get("quotaResetTimestamp")
+                if reset_at:
+                    try:
+                        value = str(reset_at).replace("Z", "+00:00")
+                        parsed = datetime.fromisoformat(value)
+                        if parsed.tzinfo is None:
+                            parsed = parsed.replace(tzinfo=timezone.utc)
+                        reset_timestamps.append(parsed.timestamp())
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+
+    identifiers = " ".join(quota_ids + quota_metrics + error_reasons).casefold()
+    if reset_delays or reset_timestamps or re.search(r"per[_-]?day|requests.?per.?day|tokens.?per.?day|rpd", identifiers):
+        kind = "daily_quota"
+    elif re.search(r"per[_-]?minute|requests.?per.?minute|tokens.?per.?minute|rpm|tpm", identifiers):
+        kind = "minute_quota"
+    else:
+        kind = "provider_rate_limit"
+
+    now_wall = datetime.now(timezone.utc).timestamp()
+    reset_timestamp = max(reset_timestamps) if reset_timestamps else None
+    reset_timestamp_delay = max(1, int(reset_timestamp - now_wall + 0.999)) if reset_timestamp else None
+    explicit_retry_header = response.headers.get("Retry-After")
+    header_delay: int | None = None
+    if explicit_retry_header:
+        header_delay = parse_duration(explicit_retry_header)
+        if header_delay is None:
             try:
-                retry_at = parsedate_to_datetime(retry_after)
+                retry_at = parsedate_to_datetime(explicit_retry_header)
                 if retry_at.tzinfo is None:
                     retry_at = retry_at.replace(tzinfo=timezone.utc)
-                return max(1, min(86400, int((retry_at - datetime.now(timezone.utc)).total_seconds())))
+                header_delay = max(1, min(86400, int((retry_at - datetime.now(timezone.utc)).total_seconds())))
             except (TypeError, ValueError, OverflowError):
                 pass
 
+    candidates = reset_delays + ([reset_timestamp_delay] if reset_timestamp_delay else [])
+    if not candidates and kind == "daily_quota":
+        # Some Gemini daily-quota responses have historically included a generic
+        # RetryInfo of 1s. That is not the daily reset. Prefer a meaningful long
+        # RetryInfo/header, otherwise calculate the next midnight Pacific reset.
+        long_retry = [delay for delay in retry_delays if delay > 300]
+        if header_delay and header_delay > 300:
+            long_retry.append(header_delay)
+        if long_retry:
+            candidates = long_retry
+        else:
+            pacific = ZoneInfo("America/Los_Angeles")
+            now_pacific = datetime.now(pacific)
+            from datetime import timedelta
+            next_midnight = datetime.combine(now_pacific.date(), datetime.min.time(), tzinfo=pacific) + timedelta(days=1)
+            candidates = [max(1, min(86400, int((next_midnight - now_pacific).total_seconds() + 0.999)))]
+    if not candidates:
+        candidates = retry_delays
+    if not candidates and header_delay:
+        candidates = [header_delay]
+    retry_after = max(candidates) if candidates else None
+    if kind == "daily_quota" and reset_timestamp is None and retry_after:
+        reset_timestamp = datetime.now(timezone.utc).timestamp() + retry_after
+    quota_id = quota_ids[0] if quota_ids else None
+    quota_metric = quota_metrics[0] if quota_metrics else None
+    label = "Daily quota exhausted" if kind == "daily_quota" else "Per-minute quota exhausted" if kind == "minute_quota" else "Provider rate limit"
+    return {
+        "kind": kind,
+        "label": label,
+        "quota_id": quota_id,
+        "quota_metric": quota_metric,
+        "retry_after_seconds": retry_after,
+        "reset_at": datetime.fromtimestamp(reset_timestamp, timezone.utc).isoformat() if reset_timestamp else None,
+        "error_reason": error_reasons[0] if error_reasons else None,
+    }
+
+
+def _cooldown_seconds_from_response(response: httpx.Response) -> int:
+    """Prefer quota reset metadata, then RetryInfo/Retry-After, then short backoff."""
+    fallback = max(30, min(900, int(os.getenv("AI_PROVIDER_429_COOLDOWN_SECONDS", "60"))))
+    diagnostics = _provider_429_diagnostics(response)
+    if diagnostics.get("retry_after_seconds"):
+        return int(diagnostics["retry_after_seconds"])
     body: Any = None
     try:
         body = response.json()
@@ -284,11 +401,18 @@ async def _wait_for_provider_slot(provider: dict[str, Any]) -> bool:
 def provider_availability() -> dict[str, Any]:
     """Small non-secret readiness view used by retry controls and diagnostics."""
     status = provider_status()
+    cooldowns = [p.get("cooldown_info", {}) for p in status.get("providers", []) if p.get("cooling_down")]
+    primary_reason = next((item for item in cooldowns if item), {})
     return {
         "configured": status.get("provider_configured", False),
         "available_provider_count": status.get("available_provider_count", 0),
         "retry_after_seconds": status.get("retry_after_seconds"),
         "fallback_configured": status.get("fallback_configured", False),
+        "blocked_reason": primary_reason.get("kind"),
+        "blocked_label": primary_reason.get("label"),
+        "quota_metric": primary_reason.get("quota_metric"),
+        "quota_id": primary_reason.get("quota_id"),
+        "reset_at": primary_reason.get("reset_at"),
     }
 
 
@@ -497,9 +621,14 @@ async def request_completion(
                     except httpx.HTTPStatusError as exc:
                         status = exc.response.status_code
                         if status == 429:
+                            cooldown_info = _provider_429_diagnostics(exc.response)
                             cooldown = _cooldown_seconds_from_response(exc.response)
+                            cooldown_info["retry_after_seconds"] = cooldown
                             _provider_cooldowns[name] = time.monotonic() + cooldown
-                            errors.append(name + f": provider rate limit response; cooling down for about {cooldown}s")
+                            _provider_cooldown_info[name] = cooldown_info
+                            label = cooldown_info.get("label") or "Provider rate limit"
+                            metric = f" ({cooldown_info['quota_metric']})" if cooldown_info.get("quota_metric") else ""
+                            errors.append(name + f": {label.lower()}{metric}; retry after about {cooldown}s")
                             provider_failed = True
                             break
                         errors.append(name + f": HTTP {status}")
@@ -528,9 +657,17 @@ async def request_completion(
     readiness = provider_availability()
     retry_after = readiness.get("retry_after_seconds")
     retry_note = f" Retry after about {retry_after} seconds." if retry_after else ""
+    readiness = provider_availability()
+    blocked_label = readiness.get("blocked_label")
+    quota_metric = readiness.get("quota_metric")
+    reason = readiness.get("blocked_reason")
+    if blocked_label:
+        detail = f"{blocked_label}" + (f" ({quota_metric})" if quota_metric else "") + ". " + detail
     raise ProviderUnavailableError(
         "All configured providers failed or reached their configured limits. " + detail + retry_note,
         retry_after_seconds=retry_after,
+        reason=reason,
+        quota_metric=quota_metric,
     )
 
 
