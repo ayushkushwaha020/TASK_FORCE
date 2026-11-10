@@ -105,6 +105,17 @@ _rate_windows: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 _RATE_WINDOW_SECONDS = 3600
 
 
+def _format_retry_wait(seconds: int) -> str:
+    total = max(0, int(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 def enforce_rate_limit(request: Request, action: str, limit: int) -> None:
     # This is a lightweight preview guard, not a substitute for production auth/quotas.
     source = request.client.host if request.client else "unknown-client"
@@ -299,17 +310,20 @@ async def retry_task(task_id: str, background_tasks: BackgroundTasks, http_reque
         raise HTTPException(status_code=503, detail="No live AI provider is configured. Add a provider in the backend environment before retrying.")
     if availability.get("available_provider_count", 0) <= 0:
         retry_after = availability.get("retry_after_seconds")
-        wait_note = f" Try again in about {retry_after} seconds." if retry_after else " Wait until the provider request budget resets."
+        wait_note = f" Try again in about {_format_retry_wait(retry_after)} ({retry_after:,} seconds)." if retry_after else " Wait until the provider request budget resets."
         fallback_note = " Configure a second provider in AI_PROVIDERS_JSON for automatic failover." if not availability.get("fallback_configured") else ""
-        raise HTTPException(status_code=503, detail="All configured providers are currently cooling down or at their local request budget." + wait_note + fallback_note)
+        blocked_label = availability.get("blocked_label")
+        quota_note = f" Provider status: {blocked_label}." if blocked_label else ""
+        metric_note = f" Quota metric: {availability['quota_metric']}." if availability.get("quota_metric") else ""
+        raise HTTPException(status_code=503, detail="All configured providers are currently unavailable." + quota_note + metric_note + wait_note + fallback_note)
 
     for agent in task.agents:
         if "qa" in agent.role.casefold() or "verif" in agent.role.casefold():
             await TASKS.update_agent(task_id, agent.id, status="waiting_for_review")
-        elif agent.status == "failed":
+        elif agent.status in {"failed", "blocked_by_provider"}:
             await TASKS.update_agent(task_id, agent.id, status="planned")
     for subtask in task.subtasks:
-        if subtask.status in {"failed", "in_progress"}:
+        if subtask.status in {"failed", "blocked_by_provider", "in_progress"}:
             await TASKS.update_subtask(task_id, subtask.id, status="planned", output=None)
 
     await TASKS.update(task_id, execution_status="queued", qa_status="pending_execution", qa_feedback=None)
