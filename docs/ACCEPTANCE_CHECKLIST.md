@@ -56,9 +56,18 @@ Status key (not checklist items): VERIFIED = implemented and covered by automate
 - [x] Redis Streams queue with consumer group, pending-message reclamation, bounded delivery attempts, and dead-letter handling (single API worker).
 - [x] Provisioned the Upstash Free Redis database `autonomous-ai-workforce` in Singapore and verified Redis Streams consumer-group, enqueue, read, pending, acknowledge, and cleanup commands.
 - [x] Stored the Upstash TLS `REDIS_URL` as a secret environment variable on the existing Render backend service; the current service still runs V1, so V3 queue activation awaits the V3 deployment and Supabase `DATABASE_URL`.
-- [~] Interrupted jobs are returned to queued state when durable Redis queue mode is configured; live process-crash/reclaim test is not available without a configured Redis instance.
-- [ ] Multi-worker leases/heartbeats, cross-process Redis event fanout, and production deployment.
-- [ ] Server-Sent Events or WebSockets instead of polling.
+- [x] Added BIGINT task version and execution-fence columns, atomic compare-and-save, strictly newer fence activation, and an additive Supabase migration.
+- [x] Added a guarded SQLite upgrade for legacy task tables; tests verify legacy rows survive and start at version 1 / fence 0.
+- [x] Persistent TaskStore reads the canonical database row and accepts lease values on every mutation method; stale generations are rejected before writes.
+- [x] Added multi-repository concurrency, duplicate-create, deleted-row resurrection, lease activation, and stale-mutation tests.
+- [~] Redis lease coordinator acquire/renew/release and heartbeat cancellation are unit-tested with a fake Redis client; live Redis integration and queue-worker wiring remain pending.
+- [~] Startup recovery still has the earlier queued-state recovery behavior; conservative lease-aware human-review handling for ambiguous in-flight provider work remains pending.
+- [ ] Wire lease acquisition, activation, heartbeat supervision, and lease arguments through the Redis Stream worker and complete execution pipeline.
+- [ ] Run two-worker integration tests against disposable Redis and validate real Upstash Lua/lease behavior.
+- [ ] Multi-instance Redis Pub/Sub event fanout and 15-second SSE reconciliation.
+- [ ] Run Supabase migration and verify live PostgreSQL create/read/update/restart plus fencing behavior.
+- [ ] Verify multi-instance staging deployment before enabling horizontal scaling.
+- [ ] Cross-instance Server-Sent Events wakeups backed by Pub/Sub and canonical database reconciliation.
 - [ ] Persistent project memory and permission-scoped agent memory.
 
 ## V4 — Tools, governance, and production readiness

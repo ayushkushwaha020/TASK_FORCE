@@ -84,30 +84,30 @@ git commit -m "feat: add renewable task leases and fencing"
 - Modify: `backend/tests/test_state.py` only where fixtures need the new version field.
 
 **Interfaces:**
-- Add `PlanResponse.version: int = 1`.
+- Add `PlanResponse.version: int = 1` plus `execution_fence: int = 0`.
 - Add repository columns `version BIGINT NOT NULL DEFAULT 1` and `execution_fence BIGINT NOT NULL DEFAULT 0`.
 - Produce `PersistentTaskRepository.get(task_id: str) -> dict[str, Any] | None`.
-- Produce `PersistentTaskRepository.save(record: dict[str, Any], expected_version: int | None, fencing_generation: int | None = None) -> int`; return the committed version, and raise typed `TaskVersionConflict` or `StaleExecutionFence` errors on rejected writes.
+- Produce `PersistentTaskRepository.save(record: dict[str, Any], execution_fence: int | None = None, expected_version: int | None = None) -> int`; return the committed version and raise `TaskWriteConflict` or `StaleExecutionFenceError` on rejected writes.
 - Produce `PersistentTaskRepository.activate_fence(task_id: str, generation: int, expected_version: int) -> int`; persist a strictly newer generation and increment task version atomically.
 - `load_all()` must return each row with its authoritative version and execution fence attached.
 
-- [ ] **Step 1: Write failing database tests.** Assert inserts begin at version 1; each successful mutation increments version once; two repositories saving the same expected version cannot both win; a stale expected version raises `TaskVersionConflict`; a worker save with a lower or non-current fence raises `StaleExecutionFence`; activating a higher fence invalidates the previous generation; SQLite restart preserves version and fence.
+- [x] **Step 1: Write failing database tests.** Assert inserts begin at version 1; each successful mutation increments version once; two repositories saving the same expected version cannot both win; a stale expected version raises `TaskVersionConflict`; a worker save with a lower or non-current fence raises `StaleExecutionFence`; activating a higher fence invalidates the previous generation; SQLite restart preserves version and fence.
 - [ ] **Step 2: Run the focused tests and confirm failure.**
 
 Run: `cd backend && python -m unittest discover -s tests -p 'test_database.py' -v`
 
 Expected: FAIL because version, fence, and atomic compare-and-save operations do not exist.
 
-- [ ] **Step 3: Add version and fence columns to the SQLAlchemy table.** Keep the existing private schema and connection-pool behavior. Do not remove the current Supabase RLS or privilege revocation setup. Add `cancelled` to the task execution-status Literal because the existing queue already treats it as terminal.
-- [ ] **Step 4: Implement atomic repository operations.** Use a transaction and conditional update/upsert so the stored version is incremented only when the caller's expected version matches. Enforce the execution fence in the same database write. Distinguish version conflicts from stale fencing generations. Make `get` and `load_all` return metadata from the table columns, not an untrusted cached copy inside the payload.
-- [ ] **Step 5: Add the additive Supabase migration.** Use `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for both columns, backfill existing rows to version 1 and fence 0, and preserve RLS plus revokes. The migration must be safe to apply to the existing V3 table without dropping task data. In `PersistentTaskRepository.initialize`, add a guarded additive SQLite column upgrade for an existing local database (inspect `PRAGMA table_info` before `ALTER TABLE`); never drop or recreate an existing task table.
-- [ ] **Step 6: Run focused database tests and confirm pass.**
+- [x] **Step 3: Add version and fence columns to the SQLAlchemy table.** Keep the existing private schema and connection-pool behavior. Do not remove the current Supabase RLS or privilege revocation setup. Add `cancelled` to the task execution-status Literal because the existing queue already treats it as terminal.
+- [x] **Step 4: Implement atomic repository operations.** Use a transaction and conditional update/upsert so the stored version is incremented only when the caller's expected version matches. Enforce the execution fence in the same database write. Distinguish version conflicts from stale fencing generations. Make `get` and `load_all` return metadata from the table columns, not an untrusted cached copy inside the payload.
+- [x] **Step 5: Add the additive Supabase migration.** Use `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for both columns, backfill existing rows to version 1 and fence 0, and preserve RLS plus revokes. The migration must be safe to apply to the existing V3 table without dropping task data. In `PersistentTaskRepository.initialize`, add a guarded additive SQLite column upgrade for an existing local database (inspect `PRAGMA table_info` before `ALTER TABLE`); never drop or recreate an existing task table.
+- [x] **Step 6: Run focused database tests and confirm pass.**
 
 Run: `cd backend && python -m unittest discover -s tests -p 'test_database.py' -v`
 
 Expected: PASS for SQLite atomicity and restart cases. The SQL migration is syntax-reviewed here; hosted Supabase execution remains a later release gate.
 
-- [ ] **Step 7: Commit.**
+- [x] **Step 7: Commit.**
 
 ```bash
 git add backend/app/database.py backend/app/schemas.py backend/tests/test_database.py backend/tests/test_state.py supabase/migrations/202611090002_multi_instance_task_fencing.sql
@@ -127,24 +127,26 @@ git commit -m "feat: add atomic task versions and execution fences"
 - Persistent `TaskStore.get(task_id)` must read the canonical repository row and refresh the local cache; memory-only mode keeps current in-memory behavior.
 - Each successful task mutation commits a new version and publishes only after its database commit; the publisher is injectable and optional.
 
-- [ ] **Step 1: Write failing multi-store tests.** Create two TaskStore instances over the same temporary SQLite database; after instance A changes a task, instance B's next `get` must return the latest version and fields. Assert every mutation increments version. Assert a stale lease cannot update status, agent, subtask, event, memory, source, or message data. Assert a version conflict does not silently overwrite another instance's update.
+**Implementation note (2026-11-10):** The repository and TaskStore now enforce atomic version checks and exact active-fence matching. TaskStore exposes activate_execution_lease and accepts lease= on all mutation methods. Version conflicts are returned explicitly (not silently overwritten); bounded reapply/retry and task-change publishing remain open.
+
+- [x] **Step 1: Write failing multi-store tests.** Create two TaskStore instances over the same temporary SQLite database; after instance A changes a task, instance B's next `get` must return the latest version and fields. Assert every mutation increments version. Assert a stale lease cannot update status, agent, subtask, event, memory, source, or message data. Assert a version conflict does not silently overwrite another instance's update.
 - [ ] **Step 2: Run focused tests and confirm failure.**
 
 Run: `cd backend && python -m unittest discover -s tests -p 'test_state_coordination.py' -v`
 
 Expected: FAIL because persistent reads still use only process-local memory and mutations have no fence argument.
 
-- [ ] **Step 3: Implement canonical reads and cache refresh.** Add repository-backed `get`; attach row version/fence metadata to the validated snapshot and refresh `_tasks`. In memory-only mode, preserve existing behavior.
+- [x] **Step 3: Implement canonical reads and cache refresh.** Add repository-backed `get`; attach row version/fence metadata to the validated snapshot and refresh `_tasks`. In memory-only mode, preserve existing behavior.
 - [ ] **Step 4: Centralize mutation and retry semantics.** Route all TaskStore mutation methods through a shared mutation helper that loads the latest record, applies one mutation, and calls atomic `save` with its expected version. Retry a version conflict a bounded number of times by reloading and reapplying the same mutation; after the retry limit, raise an explicit conflict rather than losing data. Pass the supplied lease generation to every execution-originated save.
-- [ ] **Step 5: Activate a lease fence before worker execution.** Persist the new generation through `activate_execution_lease` and reject a generation that is not newer than the previously stored value. Do not let a worker begin provider work until activation succeeds.
-- [ ] **Step 6: Preserve event and task snapshot compatibility.** Keep current `PlanResponse` fields and event ordering; version is additive. Ensure a missing version in older stored payloads is read as version 1.
-- [ ] **Step 7: Run state and persistence regression tests.**
+- [x] **Step 5: Activate a lease fence before worker execution.** Persist the new generation through `activate_execution_lease` and reject a generation that is not newer than the previously stored value. Do not let a worker begin provider work until activation succeeds.
+- [x] **Step 6: Preserve event and task snapshot compatibility.** Keep current `PlanResponse` fields and event ordering; version is additive. Ensure a missing version in older stored payloads is read as version 1.
+- [x] **Step 7: Run state and persistence regression tests.**
 
 Run: `cd backend && python -m unittest discover -s tests -p 'test_state*.py' -v`
 
 Expected: PASS, including the existing restart and in-flight task tests updated to the new lease-aware recovery rules.
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
 ```bash
 git add backend/app/state.py backend/tests/test_state.py backend/tests/test_state_coordination.py
