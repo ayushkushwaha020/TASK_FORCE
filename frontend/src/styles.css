@@ -183,3 +183,12 @@ button{cursor:pointer}
 .qa-card.qa-failed{border-color:#754054;background:#321f2a;color:#f0a7b5}.qa-card.qa-failed small{color:#d39eaa}
 @media(max-width:700px){.output-panel-heading{align-items:flex-start;flex-direction:column}.output-header-actions{width:100%;justify-content:space-between}.output-document>summary{align-items:flex-start}.output-open-label{font-size:8px}}
 .planned-tag.status-failed{color:#f0a7b5;background:#3b202b;border:1px solid #754054}
+
+/* V5.2 provider reliability and resumable missions */
+.diagnostic-retry-row{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:12px;padding:12px;border:1px solid #3c4c76;border-radius:9px;background:#111d34}
+.diagnostic-retry-row>div{display:flex;flex-direction:column;gap:4px;min-width:0}
+.diagnostic-retry-row>div b{color:#e2eaff;font-size:10px}
+.diagnostic-retry-row>div small{color:#93a3c5;font-size:9px;line-height:1.5}
+.diagnostic-retry-row .send-button{flex:none;padding:9px 12px;font-size:9px}
+.team-stage-heading>span{font:9px 'DM Mono';color:#8e9fbe;text-align:right}
+@media(max-width:700px){.diagnostic-retry-row{align-items:stretch;flex-direction:column}.diagnostic-retry-row .send-button{width:100%;justify-content:center}.team-stage-heading{align-items:flex-start;flex-direction:column}.team-stage-heading>span{text-align:left}}
