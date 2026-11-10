@@ -29,6 +29,20 @@ def _assignment_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
 
 
+def _safe_error_detail(exc: Exception, *, limit: int = 360) -> str:
+    """Keep actionable provider diagnostics while redacting likely credentials."""
+    detail = " ".join(str(exc).split())
+    detail = re.sub(
+        r"(?i)\b(authorization)\b\s*[:=]\s*(?:bearer\s+)?[^\s,;]+|\b(api[_-]?key|bearer|access[_-]?token|refresh[_-]?token|secret|password)\b\s*[:=]\s*[^\s,;]+",
+        lambda match: (match.group(1) or match.group(2)) + "=[redacted]",
+        detail,
+    )
+    detail = re.sub(r"AIza[0-9A-Za-z_-]{20,}", "[redacted-key]", detail)
+    detail = re.sub(r"(?i)sk-[A-Za-z0-9_-]{16,}", "[redacted-key]", detail)
+    detail = re.sub(r"([?&](?:key|api_key|token)=)[^&\s]+", r"\1[redacted]", detail)
+    return (detail or type(exc).__name__)[:limit]
+
+
 def _is_human_signoff_subtask(subtask: Any) -> bool:
     title = _assignment_key(subtask.title)
     return bool(
@@ -90,24 +104,30 @@ async def _mark_assigned_subtasks_in_progress(task_id: str, task: PlanResponse, 
 
 
 async def _record_specialist_subtasks(task_id: str, task: PlanResponse, results: list[dict[str, Any]]) -> None:
-    completed_ids: set[str] = set()
+    reconciled_ids: set[str] = set()
     for item in results:
-        if item.get("error") or not str(item.get("output", "")).strip():
-            continue
         agent = item["agent"]
-        for subtask in _unique_owner_assignment(task, agent):
-            output = f"[{agent['name']}]\n{item['output'][:3500]}"
-            await TASKS.update_subtask(
-                task_id, subtask.id, status="completed", output=output[:10000]
-            )
-            completed_ids.add(subtask.id)
+        matches = _unique_owner_assignment(task, agent)
+        for subtask in matches:
+            if item.get("error") or not str(item.get("output", "")).strip():
+                reason = str(item.get("error") or item.get("error_type") or "No output was returned")[:900]
+                output = f"[{agent['name']}] Execution failed: {reason}"
+                await TASKS.update_subtask(
+                    task_id, subtask.id, status="failed", output=output[:10000]
+                )
+            else:
+                output = f"[{agent['name']}]\n{item['output'][:3500]}"
+                await TASKS.update_subtask(
+                    task_id, subtask.id, status="completed", output=output[:10000]
+                )
+            reconciled_ids.add(subtask.id)
 
     unresolved = [
         subtask.title for subtask in task.subtasks
-        if subtask.id not in completed_ids
+        if subtask.id not in reconciled_ids
         and not _is_human_signoff_subtask(subtask)
         and not _is_qa_subtask(subtask, _qa_agent(task))
-        and subtask.status not in {"completed", "cancelled"}
+        and subtask.status not in {"completed", "failed", "cancelled"}
     ]
     if unresolved:
         await TASKS.add_event(
@@ -212,9 +232,13 @@ async def _run_specialist(task_id: str, task: PlanResponse, agent: dict[str, Any
         await TASKS.add_event(task_id, name, "agent_completed", f"{name} delivered its specialist findings to shared team memory.")
         return {"agent": agent, "output": output, "error": None}
     except Exception as exc:
+        detail = _safe_error_detail(exc)
         await TASKS.update_agent(task_id, agent_id, status="failed")
-        await TASKS.add_event(task_id, name, "agent_failed", f"{name} could not complete its workstream ({type(exc).__name__}).")
-        return {"agent": agent, "output": "", "error": type(exc).__name__}
+        await TASKS.add_event(
+            task_id, name, "agent_failed",
+            f"{name} could not complete its workstream ({type(exc).__name__}): {detail}",
+        )
+        return {"agent": agent, "output": "", "error": detail, "error_type": type(exc).__name__}
 
 
 async def _recover_failed_workers(task_id: str, task: PlanResponse, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -245,7 +269,12 @@ async def _recover_failed_workers(task_id: str, task: PlanResponse, results: lis
             await TASKS.add_message(task_id, str(backup["name"]), "Team Director", "reassigned_work", output[:5000])
             await TASKS.add_event(task_id, str(backup["name"]), "recovery_succeeded", f"The failed workstream was reassigned and recovered for {original['name']}.")
         except Exception as exc:
-            await TASKS.add_event(task_id, "Workforce Manager", "recovery_failed", f"Recovery for {original['name']} failed ({type(exc).__name__}); human intervention is required.")
+            detail = _safe_error_detail(exc)
+            item["recovery_error"] = detail
+            await TASKS.add_event(
+                task_id, "Workforce Manager", "recovery_failed",
+                f"Recovery for {original['name']} failed ({type(exc).__name__}): {detail}. Human intervention is required.",
+            )
     return results
 
 
@@ -389,8 +418,11 @@ async def _execute_task(task_id: str) -> None:
         if task is None or task.execution_status != "queued":
             return
         if not provider_is_configured() or task.execution_mode != "provider_planned":
-            await TASKS.update(task_id, execution_status="failed", qa_status="rejected")
-            await TASKS.add_event(task_id, "Workforce", "execution_blocked", "No live provider is configured; demo plans cannot be executed as real agent work.")
+            await TASKS.update(task_id, execution_status="failed")
+            await TASKS.add_event(
+                task_id, "Workforce", "execution_blocked",
+                "No live provider is configured; demo plans cannot be executed as real agent work. Independent QA was not run.",
+            )
             return
         try:
             await TASKS.update(task_id, execution_status="running", approval_status="approved")
@@ -430,11 +462,20 @@ async def _execute_task(task_id: str) -> None:
             await _mark_assigned_subtasks_in_progress(task_id, task, active)
             results = await asyncio.gather(*[_run_specialist(task_id, task, agent) for agent in active])
             results = await _recover_failed_workers(task_id, task, results)
-            if any(item.get("error") for item in results):
-                raise RuntimeError("One or more specialist workstreams failed after bounded recovery.")
+            # Reconcile each unambiguous owner's subtask even when another worker
+            # failed. Successful outputs must not remain "in progress" just because
+            # a separate workstream needs recovery or human intervention.
             task = await TASKS.get(task_id)
             assert task is not None
             await _record_specialist_subtasks(task_id, task, results)
+            if any(item.get("error") for item in results):
+                failed_details = " | ".join(
+                    f"{item['agent'].get('name', 'Specialist')}: {item.get('error') or item.get('error_type') or 'unknown error'}"
+                    for item in results if item.get("error")
+                )
+                raise RuntimeError(
+                    "One or more specialist workstreams failed after bounded recovery. " + failed_details
+                )
             task = await TASKS.get(task_id)
             assert task is not None
             discussion = await _team_deliberation(task_id, task, results)
@@ -477,8 +518,23 @@ async def _execute_task(task_id: str) -> None:
                 await TASKS.update(task_id, execution_status="revision_required", qa_status="rejected", qa_feedback=json.dumps(verdict or {}, ensure_ascii=False))
                 await TASKS.add_event(task_id, str(qa["name"]), "human_review_required", f"QA did not approve the deliverable after the bounded revision cycle: {summary}")
         except Exception as exc:
-            await TASKS.update(task_id, execution_status="failed", qa_status="rejected")
-            await TASKS.add_event(task_id, "Workforce Recovery", "execution_failed", f"The execution pipeline stopped safely ({type(exc).__name__}). Review the task and start a new run after correcting the issue.")
+            latest = await TASKS.get(task_id)
+            qa_status = latest.qa_status if latest is not None else "pending_execution"
+            if qa_status == "in_progress":
+                qa_status = "failed"
+            detail = _safe_error_detail(exc)
+            qa_note = (
+                "Independent QA started but did not produce a final verdict."
+                if qa_status == "failed"
+                else "Independent QA was not run because prerequisite execution did not complete."
+                if qa_status == "pending_execution"
+                else "The last recorded QA decision is preserved."
+            )
+            await TASKS.update(task_id, execution_status="failed", qa_status=qa_status)
+            await TASKS.add_event(
+                task_id, "Workforce Recovery", "execution_failed",
+                f"Execution stopped safely ({type(exc).__name__}): {detail}. {qa_note}",
+            )
 
 
 async def execute_task(task_id: str, lease: Any | None = None) -> None:
