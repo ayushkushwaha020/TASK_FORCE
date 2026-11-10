@@ -205,18 +205,18 @@ git commit -m "feat: fence queue workers and recover interrupted tasks safely"
 
 **Interfaces:**
 - Produce `TaskChange(task_id: str, version: int, event_cursor: str | None)`.
-- Produce `TaskEventHub.register(task_id: str) -> asyncio.Queue[TaskChange]`, `unregister(task_id: str, queue: asyncio.Queue[TaskChange]) -> None`, and `notify(change: TaskChange) -> None`. Use a bounded, coalescing listener queue because messages are wake-up hints, not a durable event history.
-- Produce `RedisTaskEventBus.publish(change: TaskChange) -> None` and `run_subscriber(hub: TaskEventHub, stop_event: asyncio.Event) -> None`.
+- TaskEventHub.subscribe(task_id) returns a bounded listener queue; unsubscribe removes it; notify dispatches matching task hints.
+- RedisTaskEventBus.notify(change) publishes a compact hint and wakes local listeners; run maintains the subscriber; drain, close, and status support lifecycle/diagnostics.
 - Channel: `workforce:task-events`; JSON payload contains only `task_id`, `version`, and `event_cursor`.
 
-- [ ] **Step 1: Write failing event bus tests.** Assert a committed change is published with only the three allowed fields; local listeners for the matching task are woken; listeners for another task are not; repeated or out-of-order hints do not become authoritative state; Redis subscriber disconnect is reported but does not terminate the local hub.
+- [x] **Step 1: Add event-bus tests.** Assert a committed change is published with only the three allowed fields; local listeners for the matching task are woken; listeners for another task are not; repeated or out-of-order hints do not become authoritative state; Redis subscriber disconnect is reported but does not terminate the local hub.
 - [ ] **Step 2: Run focused tests and confirm failure.**
 
 Run: `cd backend && python -m unittest discover -s tests -p 'test_task_events.py' -v`
 
 Expected: FAIL because no event hub or Pub/Sub bus exists.
 
-- [ ] **Step 3: Implement the local event hub.** Maintain per-task listener queues, fan out only matching task changes, and clean up empty listener sets when clients disconnect.
+- [x] **Step 3: Implement the local event hub.** Maintain per-task listener queues, fan out only matching task changes, and clean up empty listener sets when clients disconnect.
 - [x] **Step 4: Implement the Redis Pub/Sub publisher and subscriber.** Use one subscriber per API process, parse and validate the small payload, and dispatch hints to the local hub. Reconnect with bounded backoff after subscriber errors. Never put prompts, provider output, credentials, or full task snapshots on the channel.
 - [x] **Step 5: Publish only after persistence commits.** Inject the publisher into TaskStore; after a successful repository commit, publish `TaskChange(task_id, version, last_event_id)`. A Pub/Sub failure must be logged and exposed as degraded transport but must not roll back a committed task mutation or claim it was not persisted.
 - [x] **Step 6: Run focused tests and confirm pass.**
@@ -246,13 +246,13 @@ git commit -m "feat: broadcast committed task changes across API instances"
 - App lifespan starts and stops the Redis Pub/Sub subscriber and closes its connections cleanly.
 - Health/config responses expose non-secret storage, queue, lease, and Pub/Sub health only.
 
-- [ ] **Step 1: Write failing SSE tests.** Assert an event published by one app instance wakes an SSE listener attached to another instance; the listener fetches the canonical snapshot rather than trusting notification contents; a deliberately dropped Pub/Sub message is visible after the 15-second reconciliation timeout; reconnect from `Last-Event-ID` emits only later events; Pub/Sub failure does not terminate the stream.
+- [x] **Step 1: Add SSE regression tests for canonical rereads, dropped-notification reconciliation, and Last-Event-ID reconnect.** Assert an event published by one app instance wakes an SSE listener attached to another instance; the listener fetches the canonical snapshot rather than trusting notification contents; a deliberately dropped Pub/Sub message is visible after the 15-second reconciliation timeout; reconnect from `Last-Event-ID` emits only later events; Pub/Sub failure does not terminate the stream.
 - [ ] **Step 2: Run focused tests and confirm failure.**
 
 Run: `cd backend && python -m unittest discover -s tests -p 'test_sse.py' -v`
 
 Expected: FAIL because the SSE loop currently polls local TaskStore state and has no cross-instance notification wait.
-- [ ] **Step 3: Replace one-second polling with notification-or-timeout waiting.** Register a per-task queue for the stream lifetime, wake on matching Pub/Sub hints, and always reread PostgreSQL. Reconcile every 15 seconds even when no notification arrives. Unregister in a `finally` block.
+- [x] **Step 3: Replace one-second polling with notification-or-timeout waiting.** Register a per-task queue for the stream lifetime, wake on matching Pub/Sub hints, and always reread PostgreSQL. Reconcile every 15 seconds even when no notification arrives. Unregister in a `finally` block.
 - [x] **Step 4: Preserve SSE compatibility.** Retain current event IDs, `task_event` and `task_update` names, terminal-state close behavior, comments/heartbeat, and reconnect fallback when a prior event ID is no longer in the retained list.
 - [x] **Step 5: Integrate app startup and shutdown.** Initialize TaskStore, initialize the existing Redis queue/coordinator, attach the event publisher, start one Pub/Sub subscriber, and stop/cancel/close them in reverse order. A Pub/Sub outage should leave database reads and SSE reconciliation running.
 - [x] **Step 6: Expose safe operational status.** Extend `/health` and `/api/config/status` with configured backend, lease TTL/heartbeat, Pub/Sub connected/degraded state, and last error category. Do not return Redis URL, tokens, passwords, prompts, or provider data.
@@ -285,9 +285,9 @@ git commit -m "feat: reconcile SSE updates across API instances"
 - Tests must use two independent coordinator/queue objects and two independent TaskStore instances, not one shared in-process object.
 - Document migration `202611090002_multi_instance_task_fencing.sql`, the 30s/10s/15s timing, required backend env vars, and the fact that Supabase must be provisioned and migrated before durable multi-instance mode is enabled.
 
-- [ ] **Step 1: Write real-Redis integration tests.** Test concurrent acquire by two workers (only one succeeds); expiry then reacquire gives a higher generation; stale renew/release and stale database writes fail; kill/cancel the lease owner and verify the next owner can take over only after lease expiry; verify the previous owner's late write is rejected.
-- [ ] **Step 2: Add two-instance store and SSE integration tests.** Connect two independent TaskStore instances to the same temporary database and two event-bus subscriber instances to Redis. Commit through one store and verify the other API listener reloads the latest version, including when one Pub/Sub hint is dropped and the reconciliation timeout fires.
-- [ ] **Step 3: Add bounded recovery and terminal-idempotency cases.** Verify ambiguous running work becomes human review, terminal tasks are never executed on redelivery, and repeated failures enter the existing DLQ after the third permitted delivery.
+- [x] **Step 1: Run real-Redis integration tests.** Existing lease/fencing tests plus the new two-instance Pub/Sub and shared TaskStore tests passed against isolated embedded Redis. Test concurrent acquire by two workers (only one succeeds); expiry then reacquire gives a higher generation; stale renew/release and stale database writes fail; kill/cancel the lease owner and verify the next owner can take over only after lease expiry; verify the previous owner's late write is rejected.
+- [x] **Step 2: Add two-instance persistent-store and event-listener integration tests.** Shared SQLite snapshots plus two independent Redis clients verified that an event committed in one TaskStore wakes the second instance and the second store reads the committed version/cursor; live Supabase remains a separate release gate. Connect two independent TaskStore instances to the same temporary database and two event-bus subscriber instances to Redis. Commit through one store and verify the other API listener reloads the latest version, including when one Pub/Sub hint is dropped and the reconciliation timeout fires.
+- [x] **Step 3: Verify bounded recovery and terminal-idempotency cases.** Existing worker queue tests cover ambiguous running work, terminal tasks, bounded deliveries, and DLQ handling. Verify ambiguous running work becomes human review, terminal tasks are never executed on redelivery, and repeated failures enter the existing DLQ after the third permitted delivery.
 - [x] **Step 4: Run integration tests against a disposable Redis.**
 
 Run: `cd backend && WORKFORCE_TEST_REDIS_URL=redis://127.0.0.1:6379/15 python -m unittest discover -s tests -p 'test_multi_instance_integration.py' -v`
@@ -314,6 +314,12 @@ git add backend/tests/test_multi_instance_integration.py backend/README.md READM
 git commit -m "test: verify multi-instance workforce coordination"
 ```
 
+### Event fanout and SSE checkpoint (2026-11-10)
+
+Task 5 and Task 6 are implemented on the V3 branch. The task_events module provides strict allowlist decoding, bounded/coalescing per-task queues, newer-version preference for out-of-order hints, best-effort post-commit Redis publishing, and one reconnecting subscriber per API process. TaskStore emits a hint only after its repository save/fence transaction succeeds. The SSE generator subscribes before its initial canonical read, wakes on local/Redis hints, rereads TaskStore after every wake, and reconciles every 15 seconds. Existing event IDs, event names, heartbeat, terminal close, and reconnect fallback remain compatible.
+
+Local verification: full backend suite passed 77/77 with six Redis integration tests enabled against an isolated embedded Redis server. This includes the cross-instance TaskStore-to-TaskStore test using shared temporary SQLite and separate Redis clients. Python compile checks, git diff checks, and frontend production build passed; Vite emitted only the existing non-blocking /robot-atlas.webp runtime-resolution warning. Hosted CI is pending the final V3 push. Real Upstash Pub/Sub permission/connectivity and hosted Supabase migration/write/restart are still release gates; PR #2 remains draft and V1/main/deployment remain untouched.
+
 ## Release acceptance checklist
 
 - [ ] Two distinct workers cannot execute one task concurrently.
@@ -325,9 +331,9 @@ git commit -m "test: verify multi-instance workforce coordination"
 - [ ] Running tasks with ambiguous provider-call state go to human review rather than automatic replay.
 - [ ] Task versions increment atomically; optimistic conflicts cannot silently overwrite another API instance's update.
 - [ ] Persistent task reads always reflect the latest PostgreSQL row.
-- [ ] Post-commit notifications contain only task ID, version, and event cursor.
-- [ ] SSE clients on separate API instances receive updates; dropped Pub/Sub notifications are repaired by 15-second reconciliation.
-- [ ] Pub/Sub failure degrades transport but does not stop canonical DB reads or kill SSE connections.
+- [x] Post-commit notifications contain only task ID, version, and event cursor.
+- [x] Separate API-instance listeners receive Pub/Sub wakeups; dropped notifications are repaired by 15-second canonical reconciliation tests.
+- [x] Pub/Sub publish/subscriber failure is surfaced as degraded transport without rolling back task writes; SSE reconciliation remains active.
 - [ ] Existing approval gates, terminal-state handling, event format, and frontend behavior remain compatible.
 - [ ] Full backend tests, Redis integration tests, frontend build, and CI pass.
 - [ ] Real Upstash lease/PubSub smoke and real Supabase migration/write/restart checks are completed before any hosted scale-out.

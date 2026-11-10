@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from .database import PersistentTaskRepository, StaleExecutionFenceError, TaskWriteConflict
 from .schemas import AgentMessage, PlanResponse, SharedMemoryEntry, TaskEvent, utc_now
 from .worker_coordination import TaskLease
+from .task_events import TaskChange
 
 load_dotenv()
 
@@ -26,9 +27,35 @@ class TaskStore:
         self._tasks: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         self._initialized = False
+        self._event_notifier: Callable[[TaskChange], None] | None = None
         self._execution_lease: ContextVar[TaskLease | None] = ContextVar(
             f"task_store_execution_lease_{id(self)}", default=None
         )
+
+    def set_event_notifier(self, notifier: Callable[[TaskChange], None] | None) -> None:
+        """Attach a best-effort, post-commit notifier owned by the API lifespan."""
+        self._event_notifier = notifier
+
+    def _notify_committed(self, record: dict[str, Any]) -> None:
+        notifier = self._event_notifier
+        if notifier is None:
+            return
+        events = record.get("events") or []
+        event_cursor = str(events[-1].get("id")) if events and events[-1].get("id") else None
+        try:
+            notifier(TaskChange(
+                task_id=str(record["task_id"]),
+                version=int(record.get("version", 0) or 0),
+                event_cursor=event_cursor,
+            ))
+        except Exception:
+            # Persistence has already committed. A notification failure must
+            # never turn a successful task write into an apparent write failure.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Task-change notifier failed; SSE reconciliation will recover.",
+                exc_info=True,
+            )
 
     async def initialize(
         self,
@@ -169,6 +196,7 @@ class TaskStore:
                     else:
                         self._tasks[task_id] = latest
                     raise
+                self._notify_committed(record)
             else:
                 await self._persist_locked(record, execution_fence=generation)
             return True
@@ -204,6 +232,9 @@ class TaskStore:
                 raise
         else:
             record["version"] = int(record.get("version", 0)) + 1
+        # _repository.save returns only after its transaction context has
+        # committed. The hint contains metadata only; canonical data is reread.
+        self._notify_committed(record)
 
     async def create(self, plan: PlanResponse) -> PlanResponse:
         record = plan.model_dump(mode="json")

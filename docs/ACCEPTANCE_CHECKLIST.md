@@ -65,11 +65,18 @@ Status key (not checklist items): VERIFIED = implemented and covered by automate
 - [x] Startup recovery preserves durable queued tasks, checks active Redis leases, and routes ambiguous in-flight provider work to human review without automatic replay.
 - [x] Wire lease acquisition, activation, heartbeat supervision, terminal-state acknowledgement, and scoped execution fencing through the Redis Stream worker and full execution pipeline.
 - [~] Redis multi-consumer tests are automated against a disposable Redis service; run a separate non-destructive staging test against the configured Upstash database before deployment.
-- [ ] Multi-instance Redis Pub/Sub event fanout and 15-second SSE reconciliation.
+- [x] Multi-instance Redis Pub/Sub event fanout with strict payload validation, bounded/coalescing per-task listeners, newer-version preference for out-of-order hints, and reconnect backoff; two independent Redis clients passed local integration.
 - [ ] Run Supabase migration and verify live PostgreSQL create/read/update/restart plus fencing behavior.
 - [ ] Verify multi-instance staging deployment before enabling horizontal scaling.
-- [ ] Cross-instance Server-Sent Events wakeups backed by Pub/Sub and canonical database reconciliation.
+- [x] Cross-instance event listeners wake through Redis Pub/Sub; a second TaskStore reads the committed shared SQLite test snapshot, and SSE tests cover canonical rereads plus dropped-notification reconciliation.
 - [ ] Persistent project memory and permission-scoped agent memory.
+
+### V3 event-fanout checkpoint (2026-11-10)
+
+- Local backend suite: **77/77 passed** with all six Redis integration tests enabled against an isolated embedded Redis server. Coverage includes two-instance Pub/Sub delivery, a committed TaskStore mutation waking a second-instance listener, and canonical version/event-cursor reread.
+- Python compile checks and git diff checks passed. Frontend production build passed; Vite reports the existing non-blocking /robot-atlas.webp runtime-resolution warning.
+- Hosted CI for the final event-fanout commit is pending publication/verification. A real Upstash Pub/Sub permission/connectivity smoke test and live Supabase Postgres migration/write/restart validation have not been performed.
+- The V3 branch remains isolated in draft PR #2. No Render cutover, merge, or horizontal scale-out is authorized by these local tests.
 
 ## V4 — Tools, governance, and production readiness
 

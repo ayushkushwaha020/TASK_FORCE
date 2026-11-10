@@ -3,7 +3,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.schemas import AgentPlan, PlanResponse, ResearchSource, SubtaskPlan
 from app.state import TaskStore
@@ -29,6 +29,33 @@ def make_plan() -> PlanResponse:
 
 
 class PersistentTaskStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_task_store_notifies_only_after_successful_persistence(self):
+        from app.database import TaskWriteConflict
+        from app.task_events import TaskChange
+
+        with tempfile.TemporaryDirectory() as directory:
+            url = "sqlite+aiosqlite:///" + str(Path(directory) / "event-notify.db")
+            store = TaskStore(url)
+            notifications = []
+            store.set_event_notifier(notifications.append)
+            await store.initialize()
+            plan = await store.create(make_plan())
+            self.assertGreaterEqual(len(notifications), 2)
+            self.assertEqual(notifications[-1].task_id, plan.task_id)
+            self.assertGreater(notifications[-1].version, 0)
+            self.assertIsInstance(notifications[-1], TaskChange)
+            committed_count = len(notifications)
+
+            with patch.object(
+                store._repository,
+                "save",
+                new=AsyncMock(side_effect=TaskWriteConflict(plan.task_id, plan.version, plan.version + 1)),
+            ):
+                with self.assertRaises(TaskWriteConflict):
+                    await store.update(plan.task_id, approval_status="approved")
+            self.assertEqual(len(notifications), committed_count)
+            await store.close()
+
     async def test_task_and_updates_survive_store_recreation(self):
         with tempfile.TemporaryDirectory() as directory:
             url = "sqlite+aiosqlite:///" + str(Path(directory) / "tasks.db")

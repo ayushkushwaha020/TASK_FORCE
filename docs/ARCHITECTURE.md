@@ -57,14 +57,17 @@ Task snapshot: events, status, messages, memory, QA verdict, deliverable
 - Recovery by reassigning a failed specialist workstream once to a successful team member.
 - Frontend Server-Sent Events for live execution status and event feed, with polling fallback.
 
-## V3 Supabase persistence and Redis Streams queue foundation
-- The TaskStore keeps the existing async mutation interface and persists the full task snapshot to `workforce_tasks` through SQLAlchemy when `DATABASE_URL` is configured.
-- When both `DATABASE_URL` and `REDIS_URL` are present, approved tasks are added to a Redis Stream and consumed by a single FastAPI-owned consumer group worker. The message is acknowledged only after the task reaches a terminal state; stale pending messages are reclaimed and repeated process failures are dead-lettered.
-- The `/api/tasks/{task_id}/stream` route streams new task events and status updates as Server-Sent Events. The browser uses `EventSource` and falls back to polling if the stream disconnects. This is process-local fanout; multi-instance Redis Pub/Sub and worker leases are not implemented.
-- Supabase Postgres uses asyncpg and SSL; Render should use the Supabase Transaction Pooler (port 6543), with SQLAlchemy and asyncpg prepared-statement caches disabled. Session pooler port 5432 is also supported. SQLite uses aiosqlite for local development. Database credentials are never returned to the browser.
-- Task data is stored in the non-exposed `workforce_private` schema. Row-level security is enabled and table/schema privileges are revoked from `PUBLIC`, `anon`, and `authenticated`; only the backend database connection can access the task snapshots.
-- API startup restores snapshots. Queued/running/reviewing tasks are marked failed with an `execution_interrupted` event because FastAPI in-process jobs cannot be resumed safely.
-- Without `DATABASE_URL`, the app deliberately remains in memory mode. Existing V2 in-memory tasks are not backfilled into the database.
+## V3 persistence, worker fencing, and cross-instance event fanout
+- TaskStore persists full task snapshots through SQLAlchemy when DATABASE_URL is configured. PostgreSQL is canonical; versioned compare-and-save and execution-fence predicates reject stale writes.
+- When both DATABASE_URL and REDIS_URL are present, approved tasks enter a Redis Stream. Consumers acquire token-checked Redis leases, persist a strictly newer generation before execution, renew the lease with heartbeat supervision, and acknowledge only after terminal persistence. Ambiguous interrupted provider work is routed to human review rather than replayed blindly.
+- After each successful task snapshot commit, TaskStore emits a compact TaskChange containing task ID, committed version, and latest event cursor. Redis Pub/Sub channel workforce:task-events contains only these three fields; it never carries prompts, provider output, credentials, or full task snapshots. Publish failure is non-fatal because SSE reconciliation remains active.
+- Each API process maintains one Redis Pub/Sub subscriber and a bounded, coalescing local event hub. Subscribers reconnect with capped backoff. A hint only wakes listeners; it is never accepted as authoritative task state.
+- The /api/tasks/{task_id}/stream route retains the task_event and task_update frame formats, Last-Event-ID reconnect behavior, heartbeat, and terminal close behavior. It rereads canonical TaskStore state after a notification and at least every 15 seconds when no notification arrives. The browser keeps EventSource with polling fallback.
+- Supabase Postgres uses asyncpg and SSL; Render should use the Supabase Transaction Pooler (port 6543), with prepared-statement caches disabled. Session pooler port 5432 is also supported. SQLite/aiosqlite is used for local development and integration tests. Database and Redis credentials remain backend-only.
+- Task data is stored in the non-exposed workforce_private schema. Row-level security is enabled and table/schema privileges are revoked from PUBLIC, anon, and authenticated; only the backend database connection can access task snapshots.
+- Startup restores snapshots, preserves durable queued jobs, checks active Redis leases, and routes ambiguous in-flight work to human review. Pub/Sub subscription starts in the background so a subscriber outage does not block API startup; health/config surfaces non-secret transport state.
+- Without DATABASE_URL, the app deliberately remains in process-local memory mode. Existing V2 in-memory tasks are not backfilled into the database.
+- Local two-instance Redis/SQLite tests pass, but real Upstash Pub/Sub permission/connectivity and hosted Supabase migration/write/restart verification remain release gates. The hosted deployment remains on V1; local tests do not authorize scale-out or promotion.
 
 ## Current preview limits
 - Without `DATABASE_URL`, task state and memory live in process memory. With a Supabase Postgres `DATABASE_URL` configured, snapshots survive restarts; multiple API instances still need a durable worker/locking design.

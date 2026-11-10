@@ -18,8 +18,26 @@ from .orchestrator import create_plan
 from .providers import provider_is_configured, provider_status, test_provider_connections
 from .schemas import ApprovalRequest, PlanRequest, PlanResponse
 from .state import TASKS
+from .task_events import RedisTaskEventBus, TaskEventHub
 from .worker_queue import TASK_QUEUE
 from .web_research import web_research_is_configured
+
+SSE_RECONCILE_SECONDS = 15
+TASK_EVENT_HUB = TaskEventHub()
+TASK_EVENT_BUS = (
+    RedisTaskEventBus(TASK_QUEUE.redis, TASK_EVENT_HUB)
+    if TASK_QUEUE is not None
+    else None
+)
+TASKS.set_event_notifier(
+    TASK_EVENT_BUS.notify if TASK_EVENT_BUS is not None else TASK_EVENT_HUB.notify
+)
+
+
+def task_event_status() -> dict:
+    if TASK_EVENT_BUS is not None:
+        return TASK_EVENT_BUS.status()
+    return {"transport": "process_local", "subscriber_connected": False}
 
 
 @asynccontextmanager
@@ -31,6 +49,13 @@ async def lifespan(app: FastAPI):
     await TASKS.initialize(
         active_lease_checker=TASK_QUEUE.has_active_lease if TASK_QUEUE is not None else None
     )
+    subscriber_task = None
+    if TASK_EVENT_BUS is not None:
+        # Pub/Sub is an optimization only. Its subscriber reconnects in the
+        # background and must never be a prerequisite for serving the API.
+        subscriber_task = asyncio.create_task(
+            TASK_EVENT_BUS.run(), name="workforce-task-event-subscriber"
+        )
     worker_task = None
     if TASK_QUEUE is not None:
         worker_task = asyncio.create_task(TASK_QUEUE.run(), name="workforce-redis-stream-worker")
@@ -43,6 +68,14 @@ async def lifespan(app: FastAPI):
                 await worker_task
             except asyncio.CancelledError:
                 pass
+        if subscriber_task is not None:
+            subscriber_task.cancel()
+            try:
+                await subscriber_task
+            except asyncio.CancelledError:
+                pass
+        if TASK_EVENT_BUS is not None:
+            await TASK_EVENT_BUS.close()
         if TASK_QUEUE is not None:
             await TASK_QUEUE.close()
         await TASKS.close()
@@ -96,6 +129,7 @@ async def root():
         "durable_storage_configured": TASKS.durable_storage_configured,
         "task_queue_backend": "redis_streams" if TASK_QUEUE is not None else "background_tasks_preview",
         "durable_queue_configured": TASK_QUEUE is not None,
+        "task_event_transport": task_event_status(),
     }
 
 
@@ -107,6 +141,7 @@ async def health():
         "durable_storage_configured": TASKS.durable_storage_configured,
         "task_queue_backend": "redis_streams" if TASK_QUEUE is not None else "background_tasks_preview",
         "durable_queue_configured": TASK_QUEUE is not None,
+        "task_event_transport": task_event_status(),
     }
 
 
@@ -126,6 +161,7 @@ async def config_status():
             status["task_queue"] = {"backend": "redis_streams", "configured": True, "status": "unavailable", "error": type(exc).__name__}
     else:
         status["task_queue"] = {"backend": "background_tasks_preview", "configured": False}
+    status["task_event_transport"] = task_event_status()
     return status
 
 
@@ -153,54 +189,81 @@ async def get_task(task_id: str):
 
 
 async def _task_event_generator(task_id: str, http_request: Request):
-    """Stream task activity events and compact update notifications over SSE."""
-    task = await TASKS.get(task_id)
-    if task is None:
-        yield "event: task_error\ndata: {\"detail\":\"Task not found.\"}\n\n"
-        return
-
-    last_event_id = http_request.headers.get("last-event-id") or http_request.query_params.get("after") or ""
-    last_index = len(task.events)
-    if last_event_id:
-        positions = [index for index, item in enumerate(task.events) if item.id == last_event_id]
-        last_index = positions[-1] + 1 if positions else max(0, len(task.events) - 10)
-    last_updated = task.updated_at
-    last_heartbeat = time.monotonic()
-
-    while True:
-        if await http_request.is_disconnected():
-            break
+    """Wait for local/Redis hints, reread canonical state, and reconcile every 15s."""
+    listener = TASK_EVENT_HUB.subscribe(task_id)
+    try:
+        # Subscribe before reading to close the read/subscribe race.
         task = await TASKS.get(task_id)
         if task is None:
-            yield "event: task_error\ndata: {\"detail\":\"Task no longer exists.\"}\n\n"
-            break
+            yield "event: task_error\ndata: {\"detail\":\"Task not found.\"}\n\n"
+            return
 
-        new_events = task.events[last_index:]
-        for item in new_events:
-            payload = item.model_dump(mode="json")
-            yield f"id: {item.id}\nevent: task_event\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        last_event_id = http_request.headers.get("last-event-id") or http_request.query_params.get("after") or ""
         last_index = len(task.events)
+        if last_event_id:
+            positions = [index for index, item in enumerate(task.events) if item.id == last_event_id]
+            last_index = positions[-1] + 1 if positions else max(0, len(task.events) - 10)
+        last_updated = task.updated_at
+        last_heartbeat = time.monotonic()
+        initial_hint = None
+        if not listener.empty():
+            initial_hint = listener.get_nowait()
+            # A write may have committed between subscription and this first
+            # snapshot. Use its event cursor to include the just-committed event.
+            if not last_event_id and initial_hint.event_cursor:
+                positions = [
+                    index for index, item in enumerate(task.events)
+                    if item.id == initial_hint.event_cursor
+                ]
+                if positions:
+                    last_index = min(last_index, positions[-1])
+        force_update = initial_hint is not None
+        first_pass = True
 
-        changed = bool(new_events) or task.updated_at != last_updated
-        if changed:
-            update_payload = {
-                "task_id": task.task_id,
-                "updated_at": task.updated_at,
-                "execution_status": task.execution_status,
-                "approval_status": task.approval_status,
-                "qa_status": task.qa_status,
-                "event_count": len(task.events),
-            }
-            yield f"event: task_update\ndata: {json.dumps(update_payload, ensure_ascii=False)}\n\n"
-            last_updated = task.updated_at
+        while True:
+            if await http_request.is_disconnected():
+                break
+            if not first_pass:
+                # Every wake-up (or timeout) rereads the canonical task snapshot.
+                task = await TASKS.get(task_id)
+                if task is None:
+                    yield "event: task_error\ndata: {\"detail\":\"Task no longer exists.\"}\n\n"
+                    break
 
-        if task.execution_status in {"completed", "revision_required", "failed", "rejected", "cancelled"}:
-            break
+            new_events = task.events[last_index:]
+            for item in new_events:
+                payload = item.model_dump(mode="json")
+                yield f"id: {item.id}\nevent: task_event\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            last_index = len(task.events)
 
-        if time.monotonic() - last_heartbeat >= 15:
-            yield ": workforce stream alive\n\n"
-            last_heartbeat = time.monotonic()
-        await asyncio.sleep(1)
+            changed = force_update or bool(new_events) or task.updated_at != last_updated
+            if changed:
+                update_payload = {
+                    "task_id": task.task_id,
+                    "updated_at": task.updated_at,
+                    "execution_status": task.execution_status,
+                    "approval_status": task.approval_status,
+                    "qa_status": task.qa_status,
+                    "event_count": len(task.events),
+                }
+                yield f"event: task_update\ndata: {json.dumps(update_payload, ensure_ascii=False)}\n\n"
+                last_updated = task.updated_at
+            force_update = False
+
+            if task.execution_status in {"completed", "revision_required", "failed", "rejected", "cancelled"}:
+                break
+
+            try:
+                await asyncio.wait_for(listener.get(), timeout=SSE_RECONCILE_SECONDS)
+            except asyncio.TimeoutError:
+                # Periodic canonical reread recovers a lost Pub/Sub notification.
+                pass
+            if time.monotonic() - last_heartbeat >= 15:
+                yield ": workforce stream alive\n\n"
+                last_heartbeat = time.monotonic()
+            first_pass = False
+    finally:
+        TASK_EVENT_HUB.unsubscribe(task_id, listener)
 
 
 @app.get("/api/tasks/{task_id}/stream")

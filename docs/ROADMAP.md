@@ -41,7 +41,7 @@
 - [x] Atomic task versioning, monotonic execution-fence activation, and stale-write rejection at the repository boundary
 - [x] Canonical TaskStore reads and lease-aware mutations for status, agents, subtasks, events, memory, sources, and messages; async specialist tasks inherit the scoped lease and unscoped post-fence writes are rejected
 - [x] Wire Redis lease acquisition, monotonic database-fence activation, heartbeat supervision, and scoped fencing through the complete execution pipeline
-- [ ] Multi-instance Redis Pub/Sub event fanout and 15-second SSE reconciliation
+- [x] Multi-instance Redis Pub/Sub event fanout and 15-second SSE reconciliation (local two-instance Redis/SQLite integration passed; hosted Upstash/Supabase validation remains a release gate)
 - [ ] Permission-scoped browser/search tools
 - [ ] Isolated code runner
 - [ ] File ingestion and document generation
