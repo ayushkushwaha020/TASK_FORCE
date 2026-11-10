@@ -187,14 +187,14 @@ Run: `cd backend && python -m unittest discover -s tests -v`
 
 Verified locally: full backend suite passed (68/68) with all four real-Redis integration tests enabled against an isolated embedded Redis server. CI is configured to run the same integration suite against Redis 7.
 
-- [ ] **Step 10: Commit.**
+- [x] **Step 10: Commit and publish the V3 checkpoint.**
 
 ```bash
 git add backend/app/worker_queue.py backend/app/execution.py backend/app/state.py backend/tests/test_worker_queue.py backend/tests/test_execution_fencing.py
 git commit -m "feat: fence queue workers and recover interrupted tasks safely"
 ```
 
-**Implementation note (2026-11-10):** Task 4 is implemented on the V3 branch. The queue now acquires and renews Redis leases, persists the generation before execution, starts heartbeat supervision before the first worker-side tracking write, and ACKs only after terminal persistence. The pipeline runs inside a lease scope inherited by nested asyncio tasks; unscoped writes after a fence has been activated are rejected. A lease lost during execution cancels the operation and leaves the stream entry pending. Startup preserves queued jobs, respects active leases, and routes ambiguous interrupted provider work to human review. Real-Redis tests passed locally against an isolated embedded Redis server; hosted CI and live Upstash/Supabase verification remain release gates. Bounded TaskStore reapply/retry for ordinary version conflicts remains open under Task 3.
+**Implementation note (2026-11-10):** Task 4 is implemented on the V3 branch. The queue now acquires and renews Redis leases, persists the generation before execution, starts heartbeat supervision before the first worker-side tracking write, and ACKs only after terminal persistence. The pipeline runs inside a lease scope inherited by nested asyncio tasks; unscoped writes after a fence has been activated are rejected. A lease lost during execution cancels the operation and leaves the stream entry pending. Startup preserves queued jobs, respects active leases, and routes ambiguous interrupted provider work to human review. Real-Redis tests passed locally against an isolated embedded Redis server and hosted GitHub Actions passed for commit `dc77a268f7d34d61dff7440a1b2ca856ab6e2f27`; live Upstash/Supabase verification remains a release gate. Bounded TaskStore reapply/retry for ordinary version conflicts remains open under Task 3.
 
 ### Task 5: Post-commit task-change Pub/Sub and local event hub
 

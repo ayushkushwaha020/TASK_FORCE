@@ -61,7 +61,7 @@ Status key (not checklist items): VERIFIED = implemented and covered by automate
 - [x] Persistent TaskStore reads the canonical database row, binds the worker lease across nested async specialist tasks, rejects unscoped post-fence writes, and rejects stale generations before writes.
 - [x] Added multi-repository concurrency, duplicate-create, deleted-row resurrection, lease activation, and stale-mutation tests.
 - [x] Redis lease coordinator acquire/renew/release, heartbeat cancellation, monotonic fencing, and lease-aware worker pipeline are covered by deterministic unit tests.
-- [~] Real-Redis integration tests cover concurrent acquisition, expiry/generation rollover, heartbeat loss, and stale database writes; they ran against an isolated embedded Redis server locally and are configured in CI against an isolated Redis 7 service. A green hosted CI run is still required for verification.
+- [x] Real-Redis integration tests cover concurrent acquisition, expiry/generation rollover, heartbeat loss, and stale database writes; they passed against an isolated embedded Redis server locally and against the Redis 7 service in hosted GitHub Actions for checkpoint `dc77a268f7d34d61dff7440a1b2ca856ab6e2f27`.
 - [x] Startup recovery preserves durable queued tasks, checks active Redis leases, and routes ambiguous in-flight provider work to human review without automatic replay.
 - [x] Wire lease acquisition, activation, heartbeat supervision, terminal-state acknowledgement, and scoped execution fencing through the Redis Stream worker and full execution pipeline.
 - [~] Redis multi-consumer tests are automated against a disposable Redis service; run a separate non-destructive staging test against the configured Upstash database before deployment.
