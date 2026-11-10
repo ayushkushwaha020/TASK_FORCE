@@ -88,7 +88,7 @@ class PlanResponse(BaseModel):
         "completed", "revision_required", "failed", "rejected", "cancelled"
     ] = "awaiting_approval"
     approval_status: Literal["pending", "approved", "rejected"] = "pending"
-    qa_status: Literal["pending_execution", "in_progress", "passed", "rejected"] = "pending_execution"
+    qa_status: Literal["pending_execution", "in_progress", "passed", "rejected", "failed"] = "pending_execution"
     qa_feedback: str | None = None
     team_discussion: str | None = None
     result_markdown: str | None = None
