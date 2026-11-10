@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 import uuid
@@ -49,7 +50,7 @@ class PersistentTaskStoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any(event.kind == "execution_interrupted" for event in restored.events))
             await second.close()
 
-    async def test_inflight_task_is_requeued_when_redis_queue_is_configured(self):
+    async def test_interrupted_task_requires_human_review_when_lease_is_gone(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"REDIS_URL": "rediss://default:secret@example.upstash.io:6379"}):
             url = "sqlite+aiosqlite:///" + str(Path(directory) / "tasks.db")
             first = TaskStore(url)
@@ -59,12 +60,15 @@ class PersistentTaskStoreTests(unittest.IsolatedAsyncioTestCase):
             await first.close()
 
             second = TaskStore(url)
-            await second.initialize()
+            async def no_active_lease(_task_id):
+                return False
+
+            await second.initialize(active_lease_checker=no_active_lease)
             restored = await second.get(plan.task_id)
             self.assertIsNotNone(restored)
             assert restored is not None
-            self.assertEqual(restored.execution_status, "queued")
-            self.assertTrue(any(event.kind == "execution_requeued" for event in restored.events))
+            self.assertEqual(restored.execution_status, "revision_required")
+            self.assertTrue(any(event.kind == "execution_requires_human_review" for event in restored.events))
             await second.close()
 
     async def test_redis_queue_requires_persistent_task_storage(self):
@@ -221,6 +225,59 @@ class PersistentTaskStoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(latest.research_sources, [])
             await current_store.close()
             await stale_store.close()
+
+    async def test_running_task_with_live_redis_lease_is_not_recovered(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"REDIS_URL": "rediss://default:secret@example.upstash.io:6379"}
+        ):
+            url = "sqlite+aiosqlite:///" + str(Path(directory) / "active-worker.db")
+            first = TaskStore(url)
+            await first.initialize()
+            plan = await first.create(make_plan())
+            await first.update(plan.task_id, approval_status="approved", execution_status="running")
+            await first.close()
+
+            second = TaskStore(url)
+            async def active_lease(_task_id):
+                return True
+
+            await second.initialize(active_lease_checker=active_lease)
+            restored = await second.get(plan.task_id)
+            self.assertIsNotNone(restored)
+            assert restored is not None
+            self.assertEqual(restored.execution_status, "running")
+            self.assertFalse(
+                any(event.kind == "execution_requires_human_review" for event in restored.events)
+            )
+            await second.close()
+
+    async def test_scoped_worker_lease_is_inherited_by_task_store_mutations(self):
+        from app.database import StaleExecutionFenceError
+
+        with tempfile.TemporaryDirectory() as directory:
+            url = "sqlite+aiosqlite:///" + str(Path(directory) / "scoped-lease.db")
+            store = TaskStore(url)
+            await store.initialize()
+            plan = await store.create(make_plan())
+            current = TaskLease(plan.task_id, "new-owner", 2)
+            stale = TaskLease(plan.task_id, "old-owner", 1)
+            await store.activate_execution_lease(plan.task_id, current)
+
+            with store.execution_lease(stale):
+                child = asyncio.create_task(
+                    store.add_event(plan.task_id, "Worker", "stale", "blocked by inherited fence")
+                )
+                with self.assertRaises(StaleExecutionFenceError):
+                    await child
+
+            with self.assertRaises(StaleExecutionFenceError):
+                await store.add_event(plan.task_id, "Worker", "unscoped", "no lease context")
+
+            latest = await store.get(plan.task_id)
+            self.assertIsNotNone(latest)
+            assert latest is not None
+            self.assertFalse(any(event.kind == "stale" for event in latest.events))
+            await store.close()
 
 
 if __name__ == "__main__":

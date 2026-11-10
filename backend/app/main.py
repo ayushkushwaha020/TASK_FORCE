@@ -26,10 +26,13 @@ from .web_research import web_research_is_configured
 async def lifespan(app: FastAPI):
     # A durable queue is enabled only when both DATABASE_URL and REDIS_URL
     # are configured. TaskStore validates that dependency before the app serves.
-    await TASKS.initialize()
-    worker_task = None
     if TASK_QUEUE is not None:
         await TASK_QUEUE.initialize()
+    await TASKS.initialize(
+        active_lease_checker=TASK_QUEUE.has_active_lease if TASK_QUEUE is not None else None
+    )
+    worker_task = None
+    if TASK_QUEUE is not None:
         worker_task = asyncio.create_task(TASK_QUEUE.run(), name="workforce-redis-stream-worker")
     try:
         yield

@@ -45,7 +45,7 @@ Status key (not checklist items): VERIFIED = implemented and covered by automate
 - [x] Supabase shared transaction pooler support with prepared-statement caches disabled.
 - [x] Private `workforce_private` schema, RLS enablement, and revocation of `PUBLIC`, `anon`, and `authenticated` access.
 - [x] Task snapshot serialization includes task plan, agent states, subtasks, events, messages, shared memory, sources, QA, and deliverable.
-- [x] Startup restoration and explicit marking of interrupted in-process jobs as failed.
+- [x] Startup preserves queued durable jobs, checks Redis lease ownership for running workers, and routes ambiguous interrupted executions to human review without blind provider replay.
 - [x] Database URL unit tests and SQLite task-store persistence tests pass in CI.
 - [x] Versioned SQL migration script prepared for the Supabase project.
 - [BLOCKED] Provision a separate Supabase Free project; account approval/login flow declined the project-creation request.
@@ -58,12 +58,13 @@ Status key (not checklist items): VERIFIED = implemented and covered by automate
 - [x] Stored the Upstash TLS `REDIS_URL` as a secret environment variable on the existing Render backend service; the current service still runs V1, so V3 queue activation awaits the V3 deployment and Supabase `DATABASE_URL`.
 - [x] Added BIGINT task version and execution-fence columns, atomic compare-and-save, strictly newer fence activation, and an additive Supabase migration.
 - [x] Added a guarded SQLite upgrade for legacy task tables; tests verify legacy rows survive and start at version 1 / fence 0.
-- [x] Persistent TaskStore reads the canonical database row and accepts lease values on every mutation method; stale generations are rejected before writes.
+- [x] Persistent TaskStore reads the canonical database row, binds the worker lease across nested async specialist tasks, rejects unscoped post-fence writes, and rejects stale generations before writes.
 - [x] Added multi-repository concurrency, duplicate-create, deleted-row resurrection, lease activation, and stale-mutation tests.
-- [~] Redis lease coordinator acquire/renew/release and heartbeat cancellation are unit-tested with a fake Redis client; live Redis integration and queue-worker wiring remain pending.
-- [~] Startup recovery still has the earlier queued-state recovery behavior; conservative lease-aware human-review handling for ambiguous in-flight provider work remains pending.
-- [ ] Wire lease acquisition, activation, heartbeat supervision, and lease arguments through the Redis Stream worker and complete execution pipeline.
-- [ ] Run two-worker integration tests against disposable Redis and validate real Upstash Lua/lease behavior.
+- [x] Redis lease coordinator acquire/renew/release, heartbeat cancellation, monotonic fencing, and lease-aware worker pipeline are covered by deterministic unit tests.
+- [~] Real-Redis integration tests cover concurrent acquisition, expiry/generation rollover, heartbeat loss, and stale database writes; they ran against an isolated embedded Redis server locally and are configured in CI against an isolated Redis 7 service. A green hosted CI run is still required for verification.
+- [x] Startup recovery preserves durable queued tasks, checks active Redis leases, and routes ambiguous in-flight provider work to human review without automatic replay.
+- [x] Wire lease acquisition, activation, heartbeat supervision, terminal-state acknowledgement, and scoped execution fencing through the Redis Stream worker and full execution pipeline.
+- [~] Redis multi-consumer tests are automated against a disposable Redis service; run a separate non-destructive staging test against the configured Upstash database before deployment.
 - [ ] Multi-instance Redis Pub/Sub event fanout and 15-second SSE reconciliation.
 - [ ] Run Supabase migration and verify live PostgreSQL create/read/update/restart plus fencing behavior.
 - [ ] Verify multi-instance staging deployment before enabling horizontal scaling.

@@ -102,6 +102,11 @@ class RedisTaskCoordinator:
             return None
         return TaskLease(task_id=task_id, owner_token=owner_token, generation=generation)
 
+    async def has_active_lease(self, task_id: str) -> bool:
+        """Return whether Redis currently has a lease key for this task."""
+        lease_key, _ = self._keys(str(task_id))
+        return bool(await self.redis.exists(lease_key))
+
     async def renew(self, lease: TaskLease) -> bool:
         lease_key, _ = self._keys(lease.task_id)
         result = await self.redis.eval(
@@ -128,10 +133,28 @@ class RedisTaskCoordinator:
     async def run_with_heartbeat(self, lease: TaskLease, operation: Awaitable[T]) -> T:
         """Run an operation while renewing its lease.
 
-        If renewal fails or Redis reports an error, cancel and await the
-        operation before raising LeaseLostError. Database fencing remains the
-        final protection against an already-resumed stale coroutine.
+        Verify ownership before starting the operation. If that check or a
+        later heartbeat fails, cancel and await the operation before raising
+        LeaseLostError. Database fencing remains the final protection against
+        an already-resumed stale coroutine.
         """
+        try:
+            owned = await self.renew(lease)
+        except asyncio.CancelledError:
+            if asyncio.iscoroutine(operation):
+                operation.close()
+            raise
+        except Exception as exc:
+            if asyncio.iscoroutine(operation):
+                operation.close()
+            raise LeaseLostError(
+                f"Initial lease verification failed for task {lease.task_id} ({type(exc).__name__})."
+            ) from exc
+        if not owned:
+            if asyncio.iscoroutine(operation):
+                operation.close()
+            raise LeaseLostError(f"Lease ownership was lost before task {lease.task_id} started.")
+
         operation_task = asyncio.ensure_future(operation)
         stop = asyncio.Event()
 

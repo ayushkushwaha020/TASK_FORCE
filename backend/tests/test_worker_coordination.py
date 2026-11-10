@@ -16,6 +16,9 @@ class FakeRedis:
         self.fences = {}
         self.deny_renew = False
 
+    async def exists(self, key):
+        return int(key in self.leases)
+
     async def eval(self, script, number_of_keys, *args):
         keys = args[:number_of_keys]
         values = args[number_of_keys:]
@@ -86,6 +89,14 @@ class RedisTaskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         assert second is not None
         self.assertGreater(second.generation, first.generation)
 
+
+    async def test_has_active_lease_reports_current_redis_key(self):
+        lease = await self.coordinator.acquire("task-123")
+        assert lease is not None
+        self.assertTrue(await self.coordinator.has_active_lease("task-123"))
+        self.assertTrue(await self.coordinator.release(lease))
+        self.assertFalse(await self.coordinator.has_active_lease("task-123"))
+
     async def test_heartbeat_loss_cancels_operation_and_raises(self):
         lease = await self.coordinator.acquire("task-123")
         assert lease is not None
@@ -106,6 +117,20 @@ class RedisTaskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(LeaseLostError):
             await asyncio.wait_for(running, timeout=0.5)
         self.assertTrue(cancelled.is_set())
+
+
+    async def test_heartbeat_verifies_lease_before_starting_operation(self):
+        lease = await self.coordinator.acquire("task-123")
+        assert lease is not None
+        self.redis.deny_renew = True
+        started = asyncio.Event()
+
+        async def operation():
+            started.set()
+
+        with self.assertRaises(LeaseLostError):
+            await self.coordinator.run_with_heartbeat(lease, operation())
+        self.assertFalse(started.is_set())
 
     async def test_heartbeat_stops_cleanly_when_operation_completes(self):
         lease = await self.coordinator.acquire("task-123")

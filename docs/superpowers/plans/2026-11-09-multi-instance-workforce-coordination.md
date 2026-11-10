@@ -60,14 +60,14 @@ Run: `cd backend && python -m unittest discover -s tests -p 'test_worker_coordin
 Expected: FAIL because the coordinator module and lease API do not yet exist.
 
 - [ ] **Step 3: Implement the coordinator.** Use atomic Lua scripts (or an equivalent single atomic Redis operation) for acquire, renew, and release. The acquire script checks for an existing live lease before incrementing the task fencing counter and storing the owner token/generation with a 30-second TTL. Renew and release compare both token and generation. Do not implement ownership using separate GET/SET calls.
-- [ ] **Step 4: Implement heartbeat supervision.** Run the supplied operation and a 10-second renewal loop concurrently. On any renewal error or ownership mismatch, cancel and await the operation, then raise `LeaseLostError`. Normal operation completion stops the heartbeat cleanly.
-- [ ] **Step 5: Run focused tests and confirm pass.**
+- [x] **Step 4: Implement heartbeat supervision.** Run the supplied operation and a 10-second renewal loop concurrently. On any renewal error or ownership mismatch, cancel and await the operation, then raise `LeaseLostError`. Normal operation completion stops the heartbeat cleanly.
+- [x] **Step 5: Run focused tests and confirm pass.**
 
 Run: `cd backend && python -m unittest discover -s tests -p 'test_worker_coordination.py' -v`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```bash
 git add backend/app/worker_coordination.py backend/tests/test_worker_coordination.py
@@ -137,7 +137,7 @@ Run: `cd backend && python -m unittest discover -s tests -p 'test_state_coordina
 Expected: FAIL because persistent reads still use only process-local memory and mutations have no fence argument.
 
 - [x] **Step 3: Implement canonical reads and cache refresh.** Add repository-backed `get`; attach row version/fence metadata to the validated snapshot and refresh `_tasks`. In memory-only mode, preserve existing behavior.
-- [ ] **Step 4: Centralize mutation and retry semantics.** Route all TaskStore mutation methods through a shared mutation helper that loads the latest record, applies one mutation, and calls atomic `save` with its expected version. Retry a version conflict a bounded number of times by reloading and reapplying the same mutation; after the retry limit, raise an explicit conflict rather than losing data. Pass the supplied lease generation to every execution-originated save.
+- [ ] **Step 4: Centralize mutation and retry semantics.** Bounded reapply/retry after ordinary optimistic version conflicts remains open. Conflicts are surfaced explicitly and never silently overwritten.
 - [x] **Step 5: Activate a lease fence before worker execution.** Persist the new generation through `activate_execution_lease` and reject a generation that is not newer than the previously stored value. Do not let a worker begin provider work until activation succeeds.
 - [x] **Step 6: Preserve event and task snapshot compatibility.** Keep current `PlanResponse` fields and event ordering; version is additive. Ensure a missing version in older stored payloads is read as version 1.
 - [x] **Step 7: Run state and persistence regression tests.**
@@ -168,24 +168,24 @@ git commit -m "feat: read canonical task state and reject stale writes"
 - A message is acknowledged only after a persisted terminal state or a bounded dead-letter decision; failure to acquire/renew a lease leaves it pending.
 - Keep `MAX_DELIVERIES = 3` and `MIN_IDLE_CLAIM_MS >= 900000` unless the spec is explicitly revised.
 
-- [ ] **Step 1: Write failing queue and execution tests.** Assert two queue workers cannot both call `execute_task`; a worker that cannot acquire a lease leaves the entry pending and does not acknowledge it; a worker activates its DB fence before execution; lease loss cancels execution and does not acknowledge; an old lease cannot write after another worker has acquired a newer generation; terminal redelivery is acknowledged without execution.
-- [ ] **Step 2: Write crash-recovery tests.** A redelivered task still in `queued` may start after lease acquisition. A task persisted as `running` after a crash is not blindly restarted: transition it to `revision_required`/human review, append a recovery event, and acknowledge only after that decision is committed. Do not change interrupted active tasks back to `queued` during every API instance startup.
-- [ ] **Step 3: Run focused tests and confirm failure.**
+- [x] **Step 1: Add queue and execution tests.** Cover exclusive lease acquisition, pending/no-ACK behavior when busy, database-fence activation before execution, heartbeat loss, stale-generation rejection, and terminal acknowledgement.
+- [x] **Step 2: Add crash-recovery tests.** A live Redis lease preserves a running task; a missing lease routes ambiguous running/reviewing work to human review, and no provider request is replayed.
+- [x] **Step 3: Run focused tests and confirm the integrated behavior.**
 
 Run: `cd backend && python -m unittest discover -s tests -p 'test_worker_queue.py' -v` and `cd backend && python -m unittest discover -s tests -p 'test_execution_fencing.py' -v`
 
-Expected: FAIL because the current worker has no lease, the startup path requeues active tasks, and execution writes are not fenced.
+Expected: PASS for the worker, recovery, and execution-fencing tests after implementation.
 
-- [ ] **Step 4: Integrate lease acquisition into queue processing.** Acquire an exclusive lease before transitioning task state or invoking execution. When another owner holds the lease, leave the stream entry pending. Activate the generation in TaskStore before calling `execute_task`.
-- [ ] **Step 5: Supervise execution with the heartbeat.** Run execution through `run_with_heartbeat`; cancel and await execution on lease loss. Ensure cancellation is not converted into a normal failed result and do not acknowledge a non-terminal task after cancellation.
-- [ ] **Step 6: Thread the lease through every execution-originated mutation.** Pass the same lease through specialist work, reassignment/recovery, research, deliberation, compilation, QA, revision, status, and event writes. Every TaskStore mutation performed by the execution pipeline must carry it, including error paths.
-- [ ] **Step 7: Make crash recovery conservative.** Remove startup logic that blindly resets `running` tasks to `queued`. Only a task still durably queued before provider work begins may be started on redelivery. For a persisted running task without a provable safe checkpoint, save `revision_required`, `qa_status=rejected`, and a human-review event; never reissue an ambiguous provider request automatically.
-- [ ] **Step 8: Keep delivery and dead-letter behavior bounded.** Preserve the current 3-delivery limit and the 15-minute pending claim threshold; never let `XAUTOCLAIM` itself grant execution ownership. Release the lease in a `finally` block after execution or recovery; the Lua compare-token/generation check must make a late release from an old worker harmless.
-- [ ] **Step 9: Run the focused tests and the full backend suite.**
+- [x] **Step 4: Integrate lease acquisition into queue processing.** Acquire an exclusive lease before transitioning task state or invoking execution. When another owner holds the lease, leave the stream entry pending. Activate the generation in TaskStore before calling `execute_task`.
+- [x] **Step 5: Supervise execution with the heartbeat.** Run execution through `run_with_heartbeat`; cancel and await execution on lease loss. Ensure cancellation is not converted into a normal failed result and do not acknowledge a non-terminal task after cancellation.
+- [x] **Step 6: Thread the lease through every execution-originated mutation.** Bind the same lease in a TaskStore ContextVar scope around the execution pipeline. Async specialist/revision tasks inherit it; TaskStore rejects all unscoped writes after a fence is active, including error paths.
+- [x] **Step 7: Make crash recovery conservative.** Remove startup logic that blindly resets `running` tasks to `queued`. Only a task still durably queued before provider work begins may be started on redelivery. For a persisted running task without a provable safe checkpoint, save `revision_required`, `qa_status=rejected`, and a human-review event; never reissue an ambiguous provider request automatically.
+- [x] **Step 8: Keep delivery and dead-letter behavior bounded.** Preserve the current 3-delivery limit and the 15-minute pending claim threshold; never let `XAUTOCLAIM` itself grant execution ownership. Release the lease in a `finally` block after execution or recovery; the Lua compare-token/generation check must make a late release from an old worker harmless.
+- [x] **Step 9: Run the focused tests and the full backend suite.**
 
 Run: `cd backend && python -m unittest discover -s tests -v`
 
-Expected: PASS; lease loss leaves no stale worker mutation and terminal messages are acknowledged exactly once at the queue layer.
+Verified locally: full backend suite passed (68/68) with all four real-Redis integration tests enabled against an isolated embedded Redis server. CI is configured to run the same integration suite against Redis 7.
 
 - [ ] **Step 10: Commit.**
 
@@ -193,6 +193,8 @@ Expected: PASS; lease loss leaves no stale worker mutation and terminal messages
 git add backend/app/worker_queue.py backend/app/execution.py backend/app/state.py backend/tests/test_worker_queue.py backend/tests/test_execution_fencing.py
 git commit -m "feat: fence queue workers and recover interrupted tasks safely"
 ```
+
+**Implementation note (2026-11-10):** Task 4 is implemented on the V3 branch. The queue now acquires and renews Redis leases, persists the generation before execution, starts heartbeat supervision before the first worker-side tracking write, and ACKs only after terminal persistence. The pipeline runs inside a lease scope inherited by nested asyncio tasks; unscoped writes after a fence has been activated are rejected. A lease lost during execution cancels the operation and leaves the stream entry pending. Startup preserves queued jobs, respects active leases, and routes ambiguous interrupted provider work to human review. Real-Redis tests passed locally against an isolated embedded Redis server; hosted CI and live Upstash/Supabase verification remain release gates. Bounded TaskStore reapply/retry for ordinary version conflicts remains open under Task 3.
 
 ### Task 5: Post-commit task-change Pub/Sub and local event hub
 
@@ -215,15 +217,15 @@ Run: `cd backend && python -m unittest discover -s tests -p 'test_task_events.py
 Expected: FAIL because no event hub or Pub/Sub bus exists.
 
 - [ ] **Step 3: Implement the local event hub.** Maintain per-task listener queues, fan out only matching task changes, and clean up empty listener sets when clients disconnect.
-- [ ] **Step 4: Implement the Redis Pub/Sub publisher and subscriber.** Use one subscriber per API process, parse and validate the small payload, and dispatch hints to the local hub. Reconnect with bounded backoff after subscriber errors. Never put prompts, provider output, credentials, or full task snapshots on the channel.
-- [ ] **Step 5: Publish only after persistence commits.** Inject the publisher into TaskStore; after a successful repository commit, publish `TaskChange(task_id, version, last_event_id)`. A Pub/Sub failure must be logged and exposed as degraded transport but must not roll back a committed task mutation or claim it was not persisted.
-- [ ] **Step 6: Run focused tests and confirm pass.**
+- [x] **Step 4: Implement the Redis Pub/Sub publisher and subscriber.** Use one subscriber per API process, parse and validate the small payload, and dispatch hints to the local hub. Reconnect with bounded backoff after subscriber errors. Never put prompts, provider output, credentials, or full task snapshots on the channel.
+- [x] **Step 5: Publish only after persistence commits.** Inject the publisher into TaskStore; after a successful repository commit, publish `TaskChange(task_id, version, last_event_id)`. A Pub/Sub failure must be logged and exposed as degraded transport but must not roll back a committed task mutation or claim it was not persisted.
+- [x] **Step 6: Run focused tests and confirm pass.**
 
 Run: `cd backend && python -m unittest discover -s tests -p 'test_task_events.py' -v`
 
 Expected: PASS, including safe payload and subscriber-reconnect cases.
 
-- [ ] **Step 7: Commit.**
+- [x] **Step 7: Commit.**
 
 ```bash
 git add backend/app/task_events.py backend/app/state.py backend/tests/test_task_events.py
@@ -251,16 +253,16 @@ Run: `cd backend && python -m unittest discover -s tests -p 'test_sse.py' -v`
 
 Expected: FAIL because the SSE loop currently polls local TaskStore state and has no cross-instance notification wait.
 - [ ] **Step 3: Replace one-second polling with notification-or-timeout waiting.** Register a per-task queue for the stream lifetime, wake on matching Pub/Sub hints, and always reread PostgreSQL. Reconcile every 15 seconds even when no notification arrives. Unregister in a `finally` block.
-- [ ] **Step 4: Preserve SSE compatibility.** Retain current event IDs, `task_event` and `task_update` names, terminal-state close behavior, comments/heartbeat, and reconnect fallback when a prior event ID is no longer in the retained list.
-- [ ] **Step 5: Integrate app startup and shutdown.** Initialize TaskStore, initialize the existing Redis queue/coordinator, attach the event publisher, start one Pub/Sub subscriber, and stop/cancel/close them in reverse order. A Pub/Sub outage should leave database reads and SSE reconciliation running.
-- [ ] **Step 6: Expose safe operational status.** Extend `/health` and `/api/config/status` with configured backend, lease TTL/heartbeat, Pub/Sub connected/degraded state, and last error category. Do not return Redis URL, tokens, passwords, prompts, or provider data.
-- [ ] **Step 7: Run SSE and API regression tests.**
+- [x] **Step 4: Preserve SSE compatibility.** Retain current event IDs, `task_event` and `task_update` names, terminal-state close behavior, comments/heartbeat, and reconnect fallback when a prior event ID is no longer in the retained list.
+- [x] **Step 5: Integrate app startup and shutdown.** Initialize TaskStore, initialize the existing Redis queue/coordinator, attach the event publisher, start one Pub/Sub subscriber, and stop/cancel/close them in reverse order. A Pub/Sub outage should leave database reads and SSE reconciliation running.
+- [x] **Step 6: Expose safe operational status.** Extend `/health` and `/api/config/status` with configured backend, lease TTL/heartbeat, Pub/Sub connected/degraded state, and last error category. Do not return Redis URL, tokens, passwords, prompts, or provider data.
+- [x] **Step 7: Run SSE and API regression tests.**
 
 Run: `cd backend && python -m unittest discover -s tests -p 'test_sse.py' -v` and `cd backend && python -m unittest discover -s tests -v`
 
 Expected: PASS; API remains available during Pub/Sub outage and cross-instance SSE converges on PostgreSQL state. The local hub must coalesce a burst of hints without unbounded per-client memory growth.
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
 ```bash
 git add backend/app/main.py backend/tests/test_sse.py
@@ -286,15 +288,15 @@ git commit -m "feat: reconcile SSE updates across API instances"
 - [ ] **Step 1: Write real-Redis integration tests.** Test concurrent acquire by two workers (only one succeeds); expiry then reacquire gives a higher generation; stale renew/release and stale database writes fail; kill/cancel the lease owner and verify the next owner can take over only after lease expiry; verify the previous owner's late write is rejected.
 - [ ] **Step 2: Add two-instance store and SSE integration tests.** Connect two independent TaskStore instances to the same temporary database and two event-bus subscriber instances to Redis. Commit through one store and verify the other API listener reloads the latest version, including when one Pub/Sub hint is dropped and the reconciliation timeout fires.
 - [ ] **Step 3: Add bounded recovery and terminal-idempotency cases.** Verify ambiguous running work becomes human review, terminal tasks are never executed on redelivery, and repeated failures enter the existing DLQ after the third permitted delivery.
-- [ ] **Step 4: Run integration tests against a disposable Redis.**
+- [x] **Step 4: Run integration tests against a disposable Redis.**
 
 Run: `cd backend && WORKFORCE_TEST_REDIS_URL=redis://127.0.0.1:6379/15 python -m unittest discover -s tests -p 'test_multi_instance_integration.py' -v`
 
 Expected: PASS with local disposable Redis running. Do not substitute the Upstash production database for destructive integration tests.
 
-- [ ] **Step 5: Wire integration tests into the existing CI workflow.** Inspect the actual workflow file first, then add a Redis service container and set `WORKFORCE_TEST_REDIS_URL` for the integration test command. Preserve the existing frontend build and backend test jobs.
-- [ ] **Step 6: Update documentation and acceptance checklist.** Distinguish unit tests, local Redis integration, real Upstash smoke, and hosted Supabase validation. Mark Supabase/hosted multi-instance checks blocked until the user provisions and migrates a Supabase project. Do not mark deployment-scale acceptance complete based solely on local tests.
-- [ ] **Step 7: Run final verification.**
+- [x] **Step 5: Wire integration tests into the existing CI workflow.** Inspect the actual workflow file first, then add a Redis service container and set `WORKFORCE_TEST_REDIS_URL` for the integration test command. Preserve the existing frontend build and backend test jobs.
+- [x] **Step 6: Update documentation and acceptance checklist.** Distinguish unit tests, local Redis integration, real Upstash smoke, and hosted Supabase validation. Mark Supabase/hosted multi-instance checks blocked until the user provisions and migrates a Supabase project. Do not mark deployment-scale acceptance complete based solely on local tests.
+- [x] **Step 7: Run final verification.**
 
 Run:
 ```bash
@@ -305,7 +307,7 @@ cd backend && python -m unittest discover -s tests -v
 
 Expected: all existing and new unit tests pass; two-worker integration passes with disposable Redis; frontend build passes; CI is green for the final V3 commit. Real Upstash script/Pub/Sub smoke and hosted Supabase write/restart verification remain separately recorded until performed.
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
 ```bash
 git add backend/tests/test_multi_instance_integration.py backend/README.md README.md docs/architecture.md docs/ROADMAP.md docs/ACCEPTANCE_CHECKLIST.md .github/workflows

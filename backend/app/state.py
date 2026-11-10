@@ -2,10 +2,12 @@ import asyncio
 import copy
 import os
 import uuid
-from typing import Any
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Awaitable, Callable, Iterator
 
 from dotenv import load_dotenv
-from .database import PersistentTaskRepository, TaskWriteConflict
+from .database import PersistentTaskRepository, StaleExecutionFenceError, TaskWriteConflict
 from .schemas import AgentMessage, PlanResponse, SharedMemoryEntry, TaskEvent, utc_now
 from .worker_coordination import TaskLease
 
@@ -24,8 +26,14 @@ class TaskStore:
         self._tasks: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         self._initialized = False
+        self._execution_lease: ContextVar[TaskLease | None] = ContextVar(
+            f"task_store_execution_lease_{id(self)}", default=None
+        )
 
-    async def initialize(self) -> None:
+    async def initialize(
+        self,
+        active_lease_checker: Callable[[str], Awaitable[bool]] | None = None,
+    ) -> None:
         if self._initialized:
             return
         if self._repository is not None:
@@ -34,36 +42,54 @@ class TaskStore:
             async with self._lock:
                 for record in records:
                     needs_persist = False
-                    if record.get("execution_status") in {"queued", "running", "reviewing"}:
+                    status = record.get("execution_status")
+                    if status == "queued":
                         if self.durable_queue_configured:
-                            # The unacknowledged Redis Stream entry is the durable
-                            # source of truth; the worker will reclaim it after its
-                            # configured idle lease expires.
-                            record["execution_status"] = "queued"
-                            record["qa_status"] = "pending_execution"
-                            event_kind = "execution_requeued"
-                            message = (
-                                "The API restarted during execution. The saved task was returned to "
-                                "the durable Redis queue and will be retried by the worker."
-                            )
+                            # Approved work remains queued. Its unacknowledged
+                            # Redis Stream entry is reclaimed by the consumer group.
+                            pass
                         else:
                             record["execution_status"] = "failed"
                             record["qa_status"] = "rejected"
-                            event_kind = "execution_interrupted"
-                            message = (
-                                "The API restarted while this task was executing. Its partial history "
-                                "was restored, but no durable queue is configured to resume it."
+                            event = TaskEvent(
+                                id=str(uuid.uuid4()), actor="Workforce",
+                                kind="execution_interrupted",
+                                message=(
+                                    "The service restarted before this queued task could run, and no durable "
+                                    "queue is configured to resume it. Create a fresh approved run."
+                                ),
                             )
-                        event = TaskEvent(
-                            id=str(uuid.uuid4()), actor="Workforce",
-                            kind=event_kind, message=message,
-                        )
-                        record.setdefault("events", []).append(event.model_dump(mode="json"))
-                        record["updated_at"] = utc_now()
-                        needs_persist = True
+                            record.setdefault("events", []).append(event.model_dump(mode="json"))
+                            record["updated_at"] = utc_now()
+                            needs_persist = True
+                    elif status in {"running", "reviewing"}:
+                        # A live worker may belong to another API instance. Only
+                        # recover when Redis confirms there is no active owner.
+                        active_owner = False
+                        if self.durable_queue_configured and active_lease_checker is not None:
+                            active_owner = await active_lease_checker(str(record["task_id"]))
+                        if not active_owner:
+                            record["execution_status"] = "revision_required"
+                            record["qa_status"] = "rejected"
+                            event = TaskEvent(
+                                id=str(uuid.uuid4()), actor="Workforce Recovery",
+                                kind="execution_requires_human_review",
+                                message=(
+                                    "The prior worker no longer holds an active Redis lease. Because a provider "
+                                    "request may already have been sent, this task was not replayed automatically. "
+                                    "Review its partial history and explicitly start a fresh run if appropriate."
+                                ),
+                            )
+                            record.setdefault("events", []).append(event.model_dump(mode="json"))
+                            record["updated_at"] = utc_now()
+                            needs_persist = True
                     self._tasks[str(record["task_id"])] = record
                     if needs_persist:
-                        await self._persist_locked(record)
+                        recovery_fence = int(record.get("execution_fence", 0) or 0)
+                        await self._persist_locked(
+                            record,
+                            execution_fence=recovery_fence if recovery_fence > 0 else None,
+                        )
         self._initialized = True
 
     async def close(self) -> None:
@@ -81,8 +107,26 @@ class TaskStore:
             self._tasks[task_id] = latest
         return self._tasks.get(task_id)
 
-    @staticmethod
-    def _lease_generation(task_id: str, lease: TaskLease | None) -> int | None:
+    @contextmanager
+    def execution_lease(self, lease: TaskLease | None) -> Iterator[None]:
+        """Bind one worker lease to this async context and its child tasks.
+
+        asyncio task creation copies ContextVars, so specialist gather() tasks
+        inherit the same fence without relying on every helper to remember a
+        lease argument. Explicit lease arguments still take precedence.
+        """
+        if lease is None:
+            yield
+            return
+        token = self._execution_lease.set(lease)
+        try:
+            yield
+        finally:
+            self._execution_lease.reset(token)
+
+    def _lease_generation(self, task_id: str, lease: TaskLease | None) -> int | None:
+        if lease is None:
+            lease = self._execution_lease.get()
         if lease is None:
             return None
         if lease.task_id != task_id:
@@ -134,8 +178,17 @@ class TaskStore:
         record: dict[str, Any],
         execution_fence: int | None = None,
     ) -> None:
+        task_id = str(record["task_id"])
+        current_fence = int(record.get("execution_fence", 0) or 0)
+        if execution_fence is None and current_fence > 0:
+            # Once a worker generation is active, no unscoped mutation may
+            # silently adopt the latest database fence. This protects the
+            # pipeline even if a future helper forgets to pass/bind its lease.
+            version = int(record.get("version", 0) or 0)
+            raise StaleExecutionFenceError(
+                task_id, version, version, requested_fence=0, current_fence=current_fence
+            )
         if self._repository is not None:
-            task_id = str(record["task_id"])
             try:
                 record["version"] = await self._repository.save(
                     record,
@@ -144,7 +197,9 @@ class TaskStore:
             except TaskWriteConflict:
                 # Do not leave a stale mutated object in this instance's cache.
                 latest = await self._repository.get(task_id)
-                if latest is not None:
+                if latest is None:
+                    self._tasks.pop(task_id, None)
+                else:
                     self._tasks[task_id] = latest
                 raise
         else:

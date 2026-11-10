@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 from redis.exceptions import ResponseError
 
 from app.worker_queue import RedisStreamTaskQueue
+from app.worker_coordination import TaskLease
 
 
 class FakeRedis:
@@ -63,6 +64,38 @@ class FakeRedis:
         self.closed = True
 
 
+
+class FakeCoordinator:
+    def __init__(self, lease_available=True, heartbeat_error=None):
+        self.lease_available = lease_available
+        self.heartbeat_error = heartbeat_error
+        self.lease = TaskLease("task-123", "owner-token", 1)
+        self.renewed = 0
+        self.released = []
+
+    async def acquire(self, task_id):
+        if not self.lease_available:
+            return None
+        return TaskLease(task_id, self.lease.owner_token, self.lease.generation)
+
+    async def renew(self, lease):
+        self.renewed += 1
+        return True
+
+    async def release(self, lease):
+        self.released.append(lease)
+        return True
+
+    async def run_with_heartbeat(self, lease, operation):
+        if self.heartbeat_error:
+            operation.close()
+            raise self.heartbeat_error
+        return await operation
+
+    async def has_active_lease(self, task_id):
+        return self.lease_available
+
+
 class RedisQueueUnitTests(unittest.IsolatedAsyncioTestCase):
     async def test_initialize_creates_stream_group(self):
         redis = FakeRedis()
@@ -88,20 +121,24 @@ class RedisQueueUnitTests(unittest.IsolatedAsyncioTestCase):
     async def test_process_acknowledges_completed_task(self):
         redis = FakeRedis()
         queue = RedisStreamTaskQueue(redis_client=redis)
-        task = SimpleNamespace(execution_status="queued")
+        task = SimpleNamespace(execution_status="queued", approval_status="approved")
         fake_store = SimpleNamespace(
             get=AsyncMock(return_value=task),
+            activate_execution_lease=AsyncMock(return_value=True),
             add_event=AsyncMock(),
         )
+        queue.coordinator = FakeCoordinator()
 
-        async def execute(task_id):
+        async def execute(task_id, lease=None):
             task.execution_status = "completed"
 
         with patch("app.state.TASKS", fake_store), patch("app.execution.execute_task", new=execute):
             await queue._process_message("1000-0", {"task_id": "task-123"})
 
         self.assertEqual(redis.acks, ["1000-0"])
+        fake_store.activate_execution_lease.assert_awaited_once()
         fake_store.add_event.assert_awaited_once()
+        self.assertEqual(len(queue.coordinator.released), 1)
 
     async def test_missing_task_is_dead_lettered_and_acked(self):
         redis = FakeRedis()
@@ -116,13 +153,18 @@ class RedisQueueUnitTests(unittest.IsolatedAsyncioTestCase):
         redis = FakeRedis(delivery_count=4)
         queue = RedisStreamTaskQueue(redis_client=redis)
         fake_store = SimpleNamespace(
-            get=AsyncMock(return_value=SimpleNamespace(execution_status="queued")),
+            get=AsyncMock(return_value=SimpleNamespace(execution_status="queued", approval_status="approved")),
+            activate_execution_lease=AsyncMock(return_value=True),
             update=AsyncMock(),
             add_event=AsyncMock(),
         )
+        queue.coordinator = FakeCoordinator()
         with patch("app.state.TASKS", fake_store):
             await queue._process_message("1000-0", {"task_id": "task-123"})
-        fake_store.update.assert_awaited_once_with("task-123", execution_status="failed", qa_status="rejected")
+        fake_store.update.assert_awaited_once_with(
+            "task-123", lease=queue.coordinator.lease,
+            execution_status="failed", qa_status="rejected",
+        )
         self.assertEqual(redis.dead_letters[0]["task_id"], "task-123")
         self.assertEqual(redis.acks, ["1000-0"])
 
@@ -148,6 +190,54 @@ class RedisQueueUnitTests(unittest.IsolatedAsyncioTestCase):
         queue = RedisStreamTaskQueue(redis_client=redis)
         await queue.close()
         self.assertTrue(redis.closed)
+
+    async def test_active_lease_elsewhere_leaves_message_pending(self):
+        redis = FakeRedis()
+        queue = RedisStreamTaskQueue(redis_client=redis)
+        queue.coordinator = FakeCoordinator(lease_available=False)
+        task = SimpleNamespace(execution_status="queued", approval_status="approved")
+        fake_store = SimpleNamespace(get=AsyncMock(return_value=task))
+        with patch("app.state.TASKS", fake_store):
+            await queue._process_message("1000-0", {"task_id": "task-123"})
+        self.assertEqual(redis.acks, [])
+        fake_store.get.assert_awaited_once()
+
+    async def test_heartbeat_loss_leaves_stream_message_unacknowledged(self):
+        from app.worker_coordination import LeaseLostError
+        redis = FakeRedis()
+        queue = RedisStreamTaskQueue(redis_client=redis)
+        queue.coordinator = FakeCoordinator(heartbeat_error=LeaseLostError("lost"))
+        task = SimpleNamespace(execution_status="queued", approval_status="approved")
+        fake_store = SimpleNamespace(
+            get=AsyncMock(return_value=task),
+            activate_execution_lease=AsyncMock(return_value=True),
+            add_event=AsyncMock(),
+        )
+        with patch("app.state.TASKS", fake_store):
+            with self.assertRaises(LeaseLostError):
+                await queue._process_message("1000-0", {"task_id": "task-123"})
+        self.assertEqual(redis.acks, [])
+        self.assertEqual(len(queue.coordinator.released), 1)
+
+    async def test_stale_running_task_is_routed_to_human_review_not_replayed(self):
+        redis = FakeRedis()
+        queue = RedisStreamTaskQueue(redis_client=redis)
+        queue.coordinator = FakeCoordinator()
+        task = SimpleNamespace(execution_status="running", approval_status="approved")
+        fake_store = SimpleNamespace(
+            get=AsyncMock(return_value=task),
+            activate_execution_lease=AsyncMock(return_value=True),
+            update=AsyncMock(),
+            add_event=AsyncMock(),
+        )
+        with patch("app.state.TASKS", fake_store):
+            await queue._process_message("1000-0", {"task_id": "task-123"})
+        fake_store.update.assert_awaited_once_with(
+            "task-123", lease=queue.coordinator.lease if hasattr(queue.coordinator, "lease") else TaskLease("task-123", "owner-token", 1),
+            execution_status="revision_required", qa_status="rejected",
+        )
+        fake_store.add_event.assert_awaited_once()
+        self.assertEqual(redis.acks, ["1000-0"])
 
 
 if __name__ == "__main__":

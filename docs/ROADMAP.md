@@ -33,14 +33,14 @@
 - [x] Unit tests for Supabase pooler URL normalization, SQLite URL normalization, and private schema selection
 - [x] Versioned SQL migration prepared for Supabase; live application waits for project provisioning
 - [x] Restore task history, shared memory, messages, research sources, events, and deliverables after API restart
-- [x] Mark interrupted in-process jobs as failed with an explicit recovery event
+- [x] Preserve queued durable jobs and route ambiguous interrupted provider runs to human review without automatic replay
 - [ ] Provision Supabase Free project and configure the Render backend connection (blocked by account approval/login)
 - [ ] Apply migration and verify real Supabase create/read/update/restart behavior
 - [x] Redis Streams durable queue, consumer group, bounded delivery attempts, dead-letter stream, and stale-job reclamation (single API worker preview)
-- [x] Redis lease coordinator with token-checked acquire/renew/release and heartbeat cancellation unit tests
+- [x] Redis lease coordinator with token-checked acquire/renew/release, preflight ownership checks, heartbeat cancellation, and real-Redis integration tests
 - [x] Atomic task versioning, monotonic execution-fence activation, and stale-write rejection at the repository boundary
-- [x] Canonical TaskStore reads and lease-aware mutation methods for status, agents, subtasks, events, memory, sources, and messages
-- [ ] Wire leases and heartbeat supervision into the live Redis Stream worker and every execution pipeline call
+- [x] Canonical TaskStore reads and lease-aware mutations for status, agents, subtasks, events, memory, sources, and messages; async specialist tasks inherit the scoped lease and unscoped post-fence writes are rejected
+- [x] Wire Redis lease acquisition, monotonic database-fence activation, heartbeat supervision, and scoped fencing through the complete execution pipeline
 - [ ] Multi-instance Redis Pub/Sub event fanout and 15-second SSE reconciliation
 - [ ] Permission-scoped browser/search tools
 - [ ] Isolated code runner

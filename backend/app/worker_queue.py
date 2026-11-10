@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 
+from .worker_coordination import RedisTaskCoordinator
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,7 @@ STREAM_NAME = os.getenv("WORKFORCE_TASK_STREAM", "workforce:approved-tasks")
 DEAD_LETTER_STREAM = os.getenv("WORKFORCE_TASK_DLQ", "workforce:dead-tasks")
 CONSUMER_GROUP = os.getenv("WORKFORCE_TASK_GROUP", "workforce-workers")
 MAX_STREAM_LENGTH = 10_000
-MIN_IDLE_CLAIM_MS = max(60_000, int(os.getenv("WORKFORCE_QUEUE_CLAIM_IDLE_MS", "900000")))
+MIN_IDLE_CLAIM_MS = max(900_000, int(os.getenv("WORKFORCE_QUEUE_CLAIM_IDLE_MS", "900000")))
 MAX_DELIVERIES = 3
 CLAIM_SCAN_INTERVAL_SECONDS = max(15, int(os.getenv("WORKFORCE_QUEUE_CLAIM_SCAN_SECONDS", "60")))
 TERMINAL_STATES = {"completed", "failed", "revision_required", "rejected", "cancelled"}
@@ -39,6 +41,7 @@ class RedisStreamTaskQueue:
             health_check_interval=30, retry_on_timeout=True,
         )
         self.consumer = f"{socket.gethostname()}-{uuid.uuid4().hex[:10]}"
+        self.coordinator = RedisTaskCoordinator(self.redis)
         self._last_claim_scan = 0.0
         self._claim_cursor = "0-0"
 
@@ -85,6 +88,9 @@ class RedisStreamTaskQueue:
         )
         await self._ack(message_id)
 
+    async def has_active_lease(self, task_id: str) -> bool:
+        return await self.coordinator.has_active_lease(task_id)
+
     async def _process_message(self, message_id: str, fields: dict[str, Any]) -> None:
         from .execution import execute_task
         from .state import TASKS
@@ -101,35 +107,104 @@ class RedisStreamTaskQueue:
         if task.execution_status in TERMINAL_STATES:
             await self._ack(message_id)
             return
-        if task.execution_status != "queued":
-            # A message can be redelivered after the state transition was committed.
-            # Ack only if it is no longer awaiting execution; startup recovery
-            # converts interrupted queued/running states back to queued.
-            await self._ack(message_id)
-            return
-
-        deliveries = await self._delivery_count(message_id)
-        if deliveries > MAX_DELIVERIES:
-            await TASKS.update(task_id, execution_status="failed", qa_status="rejected")
-            await TASKS.add_event(
-                task_id, "Workforce Recovery", "queue_dead_lettered",
-                f"The approved task exceeded {MAX_DELIVERIES} queue deliveries and was stopped for human review.",
+        if task.execution_status not in {"queued", "running", "reviewing"} or task.approval_status != "approved":
+            # Never execute an unapproved or unrelated out-of-state stream item.
+            # Interrupted running/reviewing jobs are eligible only for the
+            # conservative human-review recovery path after lease acquisition.
+            logger.warning(
+                "Task %s is not eligible for execution (status=%s, approval=%s); leaving pending.",
+                task_id, task.execution_status, task.approval_status,
             )
-            await self._dead_letter(message_id, task_id, "Maximum queue deliveries exceeded.")
             return
 
-        await TASKS.add_event(
-            task_id, "Workforce Queue", "queue_job_started",
-            f"Durable worker claimed the approved task (delivery {deliveries}/{MAX_DELIVERIES}).",
-        )
-        # execute_task persists its final status before returning. If the process
-        # is killed during execution, the unacked stream entry can be reclaimed.
-        await execute_task(task_id)
-        final_task = await TASKS.get(task_id)
-        if final_task and final_task.execution_status in TERMINAL_STATES:
-            await self._ack(message_id)
-        else:
-            logger.warning("Task %s did not reach a terminal state; leaving message pending.", task_id)
+        lease = await self.coordinator.acquire(task_id)
+        if lease is None:
+            # Another consumer owns this task. Do not ACK; the stream entry can
+            # be reclaimed after the idle threshold once that owner exits.
+            logger.info("Task %s already has an active worker lease; leaving pending.", task_id)
+            return
+
+        try:
+            # Check ownership before touching canonical state. The DB fence is
+            # persisted before any worker-side task mutation or provider call.
+            if not await self.coordinator.renew(lease):
+                logger.warning("Lease ownership was lost before task %s could start.", task_id)
+                return
+            task = await TASKS.get(task_id)
+            if task is None:
+                await self._dead_letter(message_id, task_id, "The persisted task snapshot disappeared before execution.")
+                return
+            if task.execution_status in TERMINAL_STATES:
+                await self._ack(message_id)
+                return
+
+            await TASKS.activate_execution_lease(task_id, lease)
+            if not await self.coordinator.renew(lease):
+                logger.warning("Lease ownership was lost while fencing task %s.", task_id)
+                return
+
+            if task.execution_status in {"running", "reviewing"}:
+                # No active owner remains (we acquired the lease). A provider
+                # call may have escaped before the prior worker died, so never
+                # replay this ambiguous execution automatically.
+                await TASKS.update(
+                    task_id, lease=lease,
+                    execution_status="revision_required", qa_status="rejected",
+                )
+                await TASKS.add_event(
+                    task_id, "Workforce Recovery", "execution_requires_human_review",
+                    "The prior worker stopped while execution was in progress. Its provider-call outcome is ambiguous, "
+                    "so automatic replay was blocked and human review is required.",
+                    lease=lease,
+                )
+                await self._ack(message_id)
+                return
+            if task.execution_status != "queued" or task.approval_status != "approved":
+                logger.warning("Task %s changed state before execution; leaving pending.", task_id)
+                return
+
+            deliveries = await self._delivery_count(message_id)
+            if deliveries > MAX_DELIVERIES:
+                await TASKS.update(
+                    task_id, lease=lease, execution_status="failed", qa_status="rejected"
+                )
+                await TASKS.add_event(
+                    task_id, "Workforce Recovery", "queue_dead_lettered",
+                    f"The approved task exceeded {MAX_DELIVERIES} queue deliveries and was stopped for human review.",
+                    lease=lease,
+                )
+                await self._dead_letter(message_id, task_id, "Maximum queue deliveries exceeded.")
+                return
+
+            async def run_execution_with_tracking() -> None:
+                await TASKS.add_event(
+                    task_id, "Workforce Queue", "queue_job_started",
+                    f"Durable worker claimed the approved task (delivery {deliveries}/{MAX_DELIVERIES}).",
+                    lease=lease,
+                )
+                # Every TaskStore mutation inside execute_task inherits this
+                # lease context (including specialist/revision child tasks).
+                await execute_task(task_id, lease=lease)
+
+            # Heartbeat supervision starts before the first worker-side write
+            # after fencing, and verifies lease ownership before the operation.
+            await self.coordinator.run_with_heartbeat(
+                lease, run_execution_with_tracking()
+            )
+            final_task = await TASKS.get(task_id)
+            if final_task and final_task.execution_status in TERMINAL_STATES:
+                await self._ack(message_id)
+            else:
+                logger.warning(
+                    "Task %s did not reach a terminal state; leaving message pending.", task_id
+                )
+        finally:
+            try:
+                await self.coordinator.release(lease)
+            except Exception:
+                # The lease will expire naturally. Never replace the execution
+                # exception or ACK an unfinished stream message due to release failure.
+                logger.exception("Could not release worker lease for task %s.", task_id)
 
     async def _claim_stale(self) -> list[tuple[str, dict[str, Any]]]:
         result = await self.redis.xautoclaim(
