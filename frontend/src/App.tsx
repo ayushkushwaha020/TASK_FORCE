@@ -73,6 +73,19 @@ function statusLabel(status: string) {
   return labels[status] || status.replaceAll("_", " ");
 }
 
+function subtaskStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    planned: "Planned",
+    in_progress: "In progress",
+    completed: "Completed",
+    revision_required: "Revision required",
+    awaiting_human_signoff: "Awaiting human sign-off",
+    blocked_by_qa: "Blocked by QA",
+    cancelled: "Cancelled",
+  };
+  return labels[status] || status.replaceAll("_", " ");
+}
+
 function timestamp(value: string) {
   try { return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
   catch { return ""; }
@@ -311,7 +324,7 @@ export default function App() {
 
               <div className="execution-banner">
                 <div className="execution-status-icon">{plan.execution_status === "completed" ? <CheckCircle2 size={20} /> : plan.execution_status === "failed" ? <LockKeyhole size={20} /> : <Activity size={20} />}</div>
-                <div className="execution-status-copy"><b>{statusLabel(plan.execution_status)}</b><small>{plan.execution_status === "awaiting_approval" ? "Review the team and approve before any agent begins work." : plan.execution_status === "queued" || plan.execution_status === "running" || plan.execution_status === "reviewing" ? "The workspace refreshes automatically as the team reports progress." : plan.execution_status === "completed" ? "Independent AI QA approved the integrated deliverable." : plan.execution_status === "revision_required" ? "QA did not approve the result after the revision round. Human review is needed." : plan.execution_status === "rejected" ? "You rejected the proposed team plan." : "The run stopped safely. Review its activity log."}</small></div>
+                <div className="execution-status-copy"><b>{statusLabel(plan.execution_status)}</b><small>{plan.execution_status === "awaiting_approval" ? "Review the team and approve before any agent begins work." : plan.execution_status === "queued" || plan.execution_status === "running" || plan.execution_status === "reviewing" ? "The workspace refreshes automatically as the team reports progress." : plan.execution_status === "completed" ? "Independent AI QA approved the deliverable. Check workstreams for any human sign-off still pending." : plan.execution_status === "revision_required" ? "QA did not approve the result after the revision round. Human review is needed." : plan.execution_status === "rejected" ? "You rejected the proposed team plan." : "The run stopped safely. Review its activity log."}</small></div>
                 <span className={"execution-pill " + plan.execution_status}>{plan.execution_status.replaceAll("_", " ")}</span>
               </div>
 
@@ -337,7 +350,7 @@ export default function App() {
 
               <div className="workspace-columns">
                 <section className="panel"><div className="panel-heading"><h3><Users size={17} /> Your specialist team</h3><span>{plan.agents.length} agents</span></div><div className="agent-list">{plan.agents.map((agent) => <div className="agent-row" key={agent.id}><div className={"agent-avatar bot-" + robotVariant(agent)} style={{ backgroundImage: `url("${ROBOT_ATLAS_URL}")` }} role="img" aria-label={agent.name + " robot"} /><div className="agent-info"><b>{agent.name}</b><span>{agent.role} · {agent.personality}</span><small>{agent.task}</small></div><span className={"agent-status status-" + agent.status}>{agent.status.replaceAll("_", " ")}</span></div>)}</div></section>
-                <section className="panel"><div className="panel-heading"><h3><Workflow size={17} /> Workstreams</h3><span>{plan.subtasks.length} planned</span></div><div className="subtask-list">{plan.subtasks.map((task, i) => <div className="subtask-row" key={task.id}><div className="step-number">{String(i + 1).padStart(2, "0")}</div><div><b>{task.title}</b><small>Owner: {task.owner}</small></div><span className={"planned-tag status-" + task.status}>{task.status.replaceAll("_", " ")}</span></div>)}</div><div className={"qa-card qa-" + plan.qa_status}><ShieldCheck size={19} /><div><b>Independent QA · {plan.qa_status.replaceAll("_", " ")}</b><small>{plan.qa_status === "passed" ? "The reviewer approved the deliverable." : plan.qa_status === "rejected" ? "The reviewer rejected the draft or the run stopped before review." : "The independent reviewer will inspect the integrated work after the specialists report."}</small></div></div></section>
+                <section className="panel"><div className="panel-heading"><h3><Workflow size={17} /> Workstreams</h3><span>{plan.subtasks.length} total</span></div><div className="subtask-list">{plan.subtasks.map((task, i) => <div className="subtask-row" key={task.id}><div className="step-number">{String(i + 1).padStart(2, "0")}</div><div><b>{task.title}</b><small>Owner: {task.owner}</small></div><span className={"planned-tag status-" + task.status}>{subtaskStatusLabel(task.status)}</span></div>)}</div><div className={"qa-card qa-" + plan.qa_status}><ShieldCheck size={19} /><div><b>Independent QA · {plan.qa_status.replaceAll("_", " ")}</b><small>{plan.qa_status === "passed" ? "The reviewer approved the deliverable." : plan.qa_status === "rejected" ? "The reviewer rejected the draft or the run stopped before review." : "The independent reviewer will inspect the integrated work after the specialists report."}</small></div></div></section>
               </div>
 
               {plan.qa_feedback && (
