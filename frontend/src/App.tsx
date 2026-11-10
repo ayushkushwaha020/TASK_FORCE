@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import ROBOT_ATLAS_BASE64 from "./assets/robot-atlas.b64?raw";
 import {
-  Activity, ArrowRight, CheckCircle2, ChevronDown, CircleHelp,
+  Activity, AlertTriangle, ArrowRight, CheckCircle2, ChevronDown, CircleHelp,
   Code2, FileText, LayoutDashboard, LoaderCircle, LockKeyhole,
   MessageSquare, Plus, Radio, Search, Send, Settings2, ShieldCheck,
   Sparkles, Users, Workflow, Zap,
@@ -73,17 +73,44 @@ function statusLabel(status: string) {
   return labels[status] || status.replaceAll("_", " ");
 }
 
+function qaStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    pending_execution: "Not run yet",
+    not_run: "Not run",
+    in_progress: "Review in progress",
+    passed: "Passed",
+    rejected: "Rejected by QA",
+    failed: "Review failed",
+  };
+  return labels[status] || status.replaceAll("_", " ");
+}
+
 function subtaskStatusLabel(status: string) {
   const labels: Record<string, string> = {
     planned: "Planned",
     in_progress: "In progress",
     completed: "Completed",
+    failed: "Failed",
     revision_required: "Revision required",
     awaiting_human_signoff: "Awaiting human sign-off",
     blocked_by_qa: "Blocked by QA",
     cancelled: "Cancelled",
   };
   return labels[status] || status.replaceAll("_", " ");
+}
+
+function visibleSubtaskStatus(subtask: Subtask, plan: TaskPlan) {
+  if (subtask.status !== "in_progress") return subtask.status;
+  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const owner = normalize(subtask.owner);
+  const agent = plan.agents.find((item) => [item.name, item.role, item.id].some((alias) => normalize(alias) === owner));
+  if (!agent) return subtask.status;
+  const hasOwnOutput = plan.shared_memory.some((item) => item.source_agent === agent.name && item.content.trim().length > 0);
+  const hasRecoveredOutput = plan.shared_memory.some((item) => item.title.toLowerCase().includes(`recovered work for ${agent.name.toLowerCase()}`));
+  if (agent.status === "completed" && hasOwnOutput) return "completed";
+  if (agent.status === "reassigned" && hasRecoveredOutput) return "completed";
+  if (agent.status === "failed") return "failed";
+  return subtask.status;
 }
 
 function timestamp(value: string) {
@@ -169,6 +196,35 @@ export default function App() {
       if (fallbackTimer !== undefined) window.clearInterval(fallbackTimer);
     };
   }, [taskId, executionStatus]);
+
+  function downloadMarkdownFile(filename: string, content: string) {
+    const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadSpecialistOutput(item: MemoryItem) {
+    if (!plan) return;
+    const base = `${plan.title}-${item.source_agent}-${item.title}`
+      .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    downloadMarkdownFile(`${base || "specialist-output"}.md`, `# ${item.title}\n\n**Mission:** ${plan.title}\n**Specialist:** ${item.source_agent}\n\n${item.content}`);
+  }
+
+  function downloadAllSpecialistOutputs() {
+    if (!plan || missionOutputs.length === 0) return;
+    const content = missionOutputs
+      .slice().reverse()
+      .map((item) => `# ${item.title}\n\n**Specialist:** ${item.source_agent}\n**Recorded:** ${new Date(item.timestamp).toLocaleString()}\n\n${item.content}`)
+      .join("\n\n---\n\n");
+    const filename = `${plan.title}-specialist-outputs`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") + ".md";
+    downloadMarkdownFile(filename, `# ${plan.title} — Specialist Outputs\n\n${content}`);
+  }
 
   function downloadDeliverableMarkdown() {
     if (!plan?.result_markdown) return;
@@ -256,6 +312,17 @@ export default function App() {
     if (!plan?.qa_feedback) return null;
     try { return JSON.parse(plan.qa_feedback) as QaFeedback; } catch { return { summary: plan.qa_feedback }; }
   }, [plan?.qa_feedback]);
+  const qaHasStarted = plan?.events.some((event) => event.kind === "qa_started") ?? false;
+  // Older runs incorrectly stored "rejected" when an upstream worker failed before QA.
+  const qaDisplayStatus = !plan ? "pending_execution" : (
+    (plan.qa_status === "pending_execution" && plan.execution_status === "failed") ||
+    (plan.qa_status === "rejected" && !plan.qa_feedback && !qaHasStarted)
+      ? "not_run"
+      : plan.qa_status
+  );
+  const missionOutputs = plan?.shared_memory.filter((item) => item.content.trim().length > 0) ?? [];
+  const failureEvents = plan?.events.filter((event) => ["agent_failed", "recovery_failed", "execution_failed"].includes(event.kind)) ?? [];
+  const failureDetailsCaptured = failureEvents.some((event) => /\([A-Za-z0-9_]+\):\s/.test(event.message));
 
   return (
     <main className="app-shell">
@@ -312,7 +379,7 @@ export default function App() {
           <div className="workspace-view">
             <div className="workspace-heading"><div><div className="eyebrow"><Activity size={14} /> WORKFORCE OPERATIONS</div><h1>Workforce <span>HQ</span></h1><p>Watch your specialists work, share findings, and pass independent quality review.</p></div><button className="secondary-button" onClick={() => { setPlan(null); setPrompt(""); setError(""); setView("chat"); }}><Plus size={16} /> New mission</button></div>
             {!plan ? <div className="empty-workspace"><div className="empty-icon"><Workflow size={30} /></div><h2>No active mission yet</h2><p>Submit a task in Command Center and your team will appear here.</p><button className="send-button" onClick={() => setView("chat")}>Go to Command Center <ArrowRight size={16} /></button></div> : <>
-              <div className="mission-card"><div><span className="card-kicker">CURRENT MISSION · {plan.category.toUpperCase()}</span><h2>{plan.title}</h2><p>{taskSummary} · QA: {plan.qa_status.replaceAll("_", " ")}</p></div><span className={"mode-tag " + plan.execution_mode}>{plan.execution_mode === "demo" ? "DEMO PLAN" : "LIVE PROVIDER PLAN"}</span></div>
+              <div className="mission-card"><div><span className="card-kicker">CURRENT MISSION · {plan.category.toUpperCase()}</span><h2>{plan.title}</h2><p>{taskSummary} · QA: {qaStatusLabel(qaDisplayStatus)}</p></div><span className={"mode-tag " + plan.execution_mode}>{plan.execution_mode === "demo" ? "DEMO PLAN" : "LIVE PROVIDER PLAN"}</span></div>
               <div className="notice-banner"><ShieldCheck size={17} /><span>{plan.notice}</span></div>
               {plan.category === "research" && (
                 <section className="panel research-panel">
@@ -324,9 +391,58 @@ export default function App() {
 
               <div className="execution-banner">
                 <div className="execution-status-icon">{plan.execution_status === "completed" ? <CheckCircle2 size={20} /> : plan.execution_status === "failed" ? <LockKeyhole size={20} /> : <Activity size={20} />}</div>
-                <div className="execution-status-copy"><b>{statusLabel(plan.execution_status)}</b><small>{plan.execution_status === "awaiting_approval" ? "Review the team and approve before any agent begins work." : plan.execution_status === "queued" || plan.execution_status === "running" || plan.execution_status === "reviewing" ? "The workspace refreshes automatically as the team reports progress." : plan.execution_status === "completed" ? "Independent AI QA approved the deliverable. Check workstreams for any human sign-off still pending." : plan.execution_status === "revision_required" ? "QA did not approve the result after the revision round. Human review is needed." : plan.execution_status === "rejected" ? "You rejected the proposed team plan." : "The run stopped safely. Review its activity log."}</small></div>
+                <div className="execution-status-copy"><b>{statusLabel(plan.execution_status)}</b><small>{plan.execution_status === "awaiting_approval" ? "Review the team and approve before any agent begins work." : plan.execution_status === "queued" || plan.execution_status === "running" || plan.execution_status === "reviewing" ? "The workspace refreshes automatically as the team reports progress." : plan.execution_status === "completed" ? "Independent AI QA approved the deliverable. Check workstreams for any human sign-off still pending." : plan.execution_status === "revision_required" ? "QA did not approve the result after the revision round. Human review is needed." : plan.execution_status === "rejected" ? "You rejected the proposed team plan." : "The run stopped safely. Review the diagnostics and any partial outputs below."}</small></div>
                 <span className={"execution-pill " + plan.execution_status}>{plan.execution_status.replaceAll("_", " ")}</span>
               </div>
+
+              <section className="panel mission-output-panel" aria-label="Mission output window">
+                <div className="panel-heading output-panel-heading">
+                  <h3><FileText size={17} /> Mission output window</h3>
+                  <div className="output-header-actions">
+                    <span>{missionOutputs.length} specialist document{missionOutputs.length === 1 ? "" : "s"}</span>
+                    {missionOutputs.length > 0 && <button className="secondary-button" onClick={downloadAllSpecialistOutputs}>Download all .md</button>}
+                  </div>
+                </div>
+                <div className="output-window-intro">
+                  {missionOutputs.length > 0
+                    ? <><b>{missionOutputs.length} output{missionOutputs.length === 1 ? " is" : "s are"} available.</b> These are individual specialist findings, not yet a single integrated or QA-approved deliverable.</>
+                    : <>No specialist output has been recorded yet. Findings will appear here as specialists report their work.</>}
+                  {plan.result_markdown && <p>The integrated deliverable is also available in its own section below.</p>}
+                </div>
+                {missionOutputs.length > 0 ? (
+                  <div className="output-document-list">
+                    {missionOutputs.slice().reverse().map((item, index) => (
+                      <details className="output-document" key={item.id} open={index === 0}>
+                        <summary>
+                          <div className="output-document-title"><b>{item.title}</b><span>{item.source_agent} · {timestamp(item.timestamp)}</span></div>
+                          <span className="output-open-label">{index === 0 ? "Open" : "View output"} <ChevronDown size={14} /></span>
+                        </summary>
+                        <div className="output-document-body">
+                          <pre>{item.content}</pre>
+                          <button className="secondary-button" onClick={() => downloadSpecialistOutput(item)}>Download this output .md</button>
+                        </div>
+                      </details>
+                    ))}
+                  </div>
+                ) : <div className="output-empty-state"><FileText size={20} /><span>Waiting for the first specialist document.</span></div>}
+              </section>
+
+              {plan.execution_status === "failed" && (
+                <section className="panel diagnostic-panel">
+                  <div className="panel-heading"><h3><AlertTriangle size={17} /> Run diagnostics</h3><span>{failureEvents.length} failure events</span></div>
+                  <div className="diagnostic-body">
+                    {failureEvents.length > 0 ? failureEvents.slice().reverse().map((item) => (
+                      <div className="diagnostic-event" key={item.id}>
+                        <div className="feed-meta"><b>{item.actor}</b><span>{timestamp(item.timestamp)}</span></div>
+                        <strong>{item.kind.replaceAll("_", " ")}</strong>
+                        <p>{item.message}</p>
+                      </div>
+                    )) : <p>The run stopped, but no detailed failure event was saved.</p>}
+                    {!failureDetailsCaptured && <div className="diagnostic-note"><b>Historical log limitation:</b> This run saved only the exception type <code>RuntimeError</code>, not the underlying provider response. The historical record cannot confirm whether it was an HTTP 429 rate limit, a transport issue, or another provider error.</div>}
+                    {qaDisplayStatus === "not_run" && <div className="diagnostic-note"><b>QA was not run.</b> Specialist execution stopped before the independent reviewer started. This is not a QA rejection.</div>}
+                  </div>
+                </section>
+              )}
 
               {plan.execution_status === "awaiting_approval" && (
                 <div className="approval-card">
@@ -350,7 +466,7 @@ export default function App() {
 
               <div className="workspace-columns">
                 <section className="panel"><div className="panel-heading"><h3><Users size={17} /> Your specialist team</h3><span>{plan.agents.length} agents</span></div><div className="agent-list">{plan.agents.map((agent) => <div className="agent-row" key={agent.id}><div className={"agent-avatar bot-" + robotVariant(agent)} style={{ backgroundImage: `url("${ROBOT_ATLAS_URL}")` }} role="img" aria-label={agent.name + " robot"} /><div className="agent-info"><b>{agent.name}</b><span>{agent.role} · {agent.personality}</span><small>{agent.task}</small></div><span className={"agent-status status-" + agent.status}>{agent.status.replaceAll("_", " ")}</span></div>)}</div></section>
-                <section className="panel"><div className="panel-heading"><h3><Workflow size={17} /> Workstreams</h3><span>{plan.subtasks.length} total</span></div><div className="subtask-list">{plan.subtasks.map((task, i) => <div className="subtask-row" key={task.id}><div className="step-number">{String(i + 1).padStart(2, "0")}</div><div><b>{task.title}</b><small>Owner: {task.owner}</small></div><span className={"planned-tag status-" + task.status}>{subtaskStatusLabel(task.status)}</span></div>)}</div><div className={"qa-card qa-" + plan.qa_status}><ShieldCheck size={19} /><div><b>Independent QA · {plan.qa_status.replaceAll("_", " ")}</b><small>{plan.qa_status === "passed" ? "The reviewer approved the deliverable." : plan.qa_status === "rejected" ? "The reviewer rejected the draft or the run stopped before review." : "The independent reviewer will inspect the integrated work after the specialists report."}</small></div></div></section>
+                <section className="panel"><div className="panel-heading"><h3><Workflow size={17} /> Workstreams</h3><span>{plan.subtasks.length} total</span></div><div className="subtask-list">{plan.subtasks.map((task, i) => { const displayStatus = visibleSubtaskStatus(task, plan); return <div className="subtask-row" key={task.id}><div className="step-number">{String(i + 1).padStart(2, "0")}</div><div><b>{task.title}</b><small>Owner: {task.owner}</small></div><span className={"planned-tag status-" + displayStatus}>{subtaskStatusLabel(displayStatus)}</span></div>; })}</div><div className={"qa-card qa-" + qaDisplayStatus}><ShieldCheck size={19} /><div><b>Independent QA · {qaStatusLabel(qaDisplayStatus)}</b><small>{qaDisplayStatus === "passed" ? "The reviewer approved the deliverable." : qaDisplayStatus === "rejected" ? "The independent reviewer rejected the draft after reviewing it." : qaDisplayStatus === "failed" ? "The reviewer started but could not complete a valid review." : qaDisplayStatus === "not_run" ? "No QA decision was made because prerequisite specialist execution stopped first." : "The independent reviewer will inspect the integrated work after the specialists report."}</small></div></div></section>
               </div>
 
               {plan.qa_feedback && (
