@@ -69,6 +69,96 @@ class ExecutionPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(event.kind == "human_signoff_pending" for event in result.events))
 
 
+    async def test_upstream_provider_failure_is_explained_and_does_not_masquerade_as_qa_rejection(self):
+        plan = self.make_plan()
+        await TASKS.create(plan)
+        await TASKS.update(plan.task_id, execution_status="queued", approval_status="approved")
+
+        async def failing_completion(messages, *, temperature=0.2, json_mode=False):
+            raise RuntimeError(
+                "All configured providers failed or reached their configured limits. "
+                "gemini-main: provider rate limit response"
+            )
+
+        with patch("app.execution.provider_is_configured", return_value=True), \
+             patch("app.execution.request_completion", side_effect=failing_completion):
+            await execute_task(plan.task_id)
+
+        result = await TASKS.get(plan.task_id)
+        assert result is not None
+        self.assertEqual(result.execution_status, "failed")
+        self.assertEqual(result.qa_status, "pending_execution")
+        self.assertFalse(any(event.kind == "qa_started" for event in result.events))
+        self.assertTrue(any(
+            event.kind == "agent_failed" and "provider rate limit response" in event.message
+            for event in result.events
+        ))
+        failure = next(event for event in result.events if event.kind == "execution_failed")
+        self.assertIn("provider rate limit response", failure.message)
+        self.assertIn("QA was not run", failure.message)
+
+    async def test_qa_runtime_error_is_reported_as_failed_review_not_rejection(self):
+        plan = self.make_plan()
+        await TASKS.create(plan)
+        await TASKS.update(plan.task_id, execution_status="queued", approval_status="approved")
+
+        async def fake_completion(messages, *, temperature=0.2, json_mode=False):
+            system = messages[0]["content"]
+            if "independent QA authority" in system:
+                raise RuntimeError("QA endpoint temporarily unavailable")
+            if "facilitating a transparent" in system:
+                return "The team aligned on scope and identified the remaining assumptions."
+            if "principal editor" in system:
+                return "# Campus Event Plan\n\nA structured event plan with risks and next steps."
+            return "Specialist findings with concrete decisions, assumptions, risks, and next steps."
+
+        with patch("app.execution.provider_is_configured", return_value=True), \
+             patch("app.execution.request_completion", side_effect=fake_completion):
+            await execute_task(plan.task_id)
+
+        result = await TASKS.get(plan.task_id)
+        assert result is not None
+        self.assertEqual(result.execution_status, "failed")
+        self.assertEqual(result.qa_status, "failed")
+        self.assertTrue(any(event.kind == "qa_started" for event in result.events))
+        failure = next(event for event in result.events if event.kind == "execution_failed")
+        self.assertIn("QA endpoint temporarily unavailable", failure.message)
+        self.assertIn("did not produce a final verdict", failure.message)
+
+    async def test_partial_specialist_results_reconcile_success_and_failure_independently(self):
+        from app.execution import _record_specialist_subtasks
+
+        plan = self.make_plan().model_copy(update={
+            "subtasks": [
+                SubtaskPlan(id="success", title="Write the operations plan", owner="Operations Planner", status="in_progress"),
+                SubtaskPlan(id="failed", title="Coordinate the project", owner="Project Director", status="in_progress"),
+            ]
+        })
+        await TASKS.create(plan)
+        task = await TASKS.get(plan.task_id)
+        assert task is not None
+        await _record_specialist_subtasks(plan.task_id, task, [
+            {"agent": {"id": "ops", "name": "Operations Planner", "role": "Operations Specialist"}, "output": "Completed operations findings.", "error": None},
+            {"agent": {"id": "director", "name": "Project Director", "role": "Project Manager"}, "output": "", "error": "provider rate limit response"},
+        ])
+        result = await TASKS.get(plan.task_id)
+        assert result is not None
+        subtasks = {item.id: item for item in result.subtasks}
+        self.assertEqual(subtasks["success"].status, "completed")
+        self.assertEqual(subtasks["failed"].status, "failed")
+        self.assertIn("provider rate limit response", subtasks["failed"].output or "")
+
+    def test_error_detail_redacts_auth_headers_and_keys(self):
+        from app.execution import _safe_error_detail
+
+        detail = _safe_error_detail(RuntimeError(
+            "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456 api_key=AIza123456789012345678901234567890"
+        ))
+        self.assertNotIn("abcdefghijklmnopqrstuvwxyz123456", detail)
+        self.assertNotIn("AIza123456789012345678901234567890", detail)
+        self.assertIn("Authorization=[redacted]", detail)
+        self.assertIn("api_key=[redacted]", detail)
+
     async def test_subtasks_are_not_completed_by_result_position_or_ambiguous_owner(self):
         from app.execution import _record_specialist_subtasks
 
