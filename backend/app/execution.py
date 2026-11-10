@@ -24,6 +24,140 @@ def _qa_agent(task: PlanResponse) -> dict[str, Any]:
     )
 
 
+def _assignment_key(value: Any) -> str:
+    """Normalize owner labels for exact, conservative assignment matching."""
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+
+def _is_human_signoff_subtask(subtask: Any) -> bool:
+    title = _assignment_key(subtask.title)
+    return bool(
+        re.search(r"\b(sign off|signoff|go no go|formal approval|human approval|stakeholder approval|customer approval|final authorization|final authorisation|final approval)\b", title)
+        or re.search(r"\b(obtain|secure|seek|collect|record|request) (formal |human |stakeholder |customer )?approval\b", title)
+    )
+
+
+def _is_qa_subtask(subtask: Any, qa_agent: dict[str, Any]) -> bool:
+    if _is_human_signoff_subtask(subtask):
+        return False
+    title = _assignment_key(subtask.title)
+    if re.search(r"\b(qa|quality assurance|independent validation|final verification|acceptance review)\b", title):
+        return True
+    owner = _assignment_key(subtask.owner)
+    qa_aliases = {
+        _assignment_key(qa_agent.get("name")),
+        _assignment_key(qa_agent.get("role")),
+        _assignment_key(qa_agent.get("id")),
+    }
+    qa_aliases.discard("")
+    return owner in qa_aliases
+
+
+def _unique_owner_assignment(task: PlanResponse, agent: dict[str, Any]) -> list[Any]:
+    """Return a subtask only when its owner unambiguously names this agent.
+
+    Never distribute specialist outputs by list position: a workstream is only
+    attached to a subtask when its owner matches exactly one agent and exactly
+    one non-QA, non-human-signoff subtask.
+    """
+    aliases = {
+        _assignment_key(agent.get("name")),
+        _assignment_key(agent.get("role")),
+        _assignment_key(agent.get("id")),
+    }
+    aliases.discard("")
+    matching_agents = [
+        candidate for candidate in task.agents
+        if _assignment_key(candidate.name) in aliases
+        or _assignment_key(candidate.role) in aliases
+        or _assignment_key(candidate.id) in aliases
+    ]
+    if len(matching_agents) != 1:
+        return []
+    matches = [
+        subtask for subtask in task.subtasks
+        if _assignment_key(subtask.owner) in aliases
+        and not _is_human_signoff_subtask(subtask)
+        and not _is_qa_subtask(subtask, _qa_agent(task))
+    ]
+    return matches if len(matches) == 1 else []
+
+
+async def _mark_assigned_subtasks_in_progress(task_id: str, task: PlanResponse, agents: list[dict[str, Any]]) -> None:
+    for agent in agents:
+        for subtask in _unique_owner_assignment(task, agent):
+            await TASKS.update_subtask(task_id, subtask.id, status="in_progress")
+
+
+async def _record_specialist_subtasks(task_id: str, task: PlanResponse, results: list[dict[str, Any]]) -> None:
+    completed_ids: set[str] = set()
+    for item in results:
+        if item.get("error") or not str(item.get("output", "")).strip():
+            continue
+        agent = item["agent"]
+        for subtask in _unique_owner_assignment(task, agent):
+            output = f"[{agent['name']}]\n{item['output'][:3500]}"
+            await TASKS.update_subtask(
+                task_id, subtask.id, status="completed", output=output[:10000]
+            )
+            completed_ids.add(subtask.id)
+
+    unresolved = [
+        subtask.title for subtask in task.subtasks
+        if subtask.id not in completed_ids
+        and not _is_human_signoff_subtask(subtask)
+        and not _is_qa_subtask(subtask, _qa_agent(task))
+        and subtask.status not in {"completed", "cancelled"}
+    ]
+    if unresolved:
+        await TASKS.add_event(
+            task_id,
+            "Workforce Manager",
+            "subtask_mapping_deferred",
+            "Some subtasks were not marked complete because no unique agent-owner mapping could be verified: "
+            + "; ".join(unresolved[:8]),
+        )
+
+
+async def _reconcile_qa_and_signoff_subtasks(
+    task_id: str, task: PlanResponse, qa_agent: dict[str, Any], verdict: dict[str, Any]
+) -> None:
+    approved = verdict.get("decision") == "approve"
+    summary = str(verdict.get("summary", "Independent QA review finished."))[:1200]
+    for subtask in task.subtasks:
+        if _is_qa_subtask(subtask, qa_agent):
+            await TASKS.update_subtask(
+                task_id,
+                subtask.id,
+                status="completed" if approved else "revision_required",
+                output=(
+                    "Independent QA approved the deliverable. " + summary
+                    if approved else "Independent QA did not approve the deliverable. " + summary
+                ),
+            )
+        elif _is_human_signoff_subtask(subtask):
+            await TASKS.update_subtask(
+                task_id,
+                subtask.id,
+                status="awaiting_human_signoff" if approved else "blocked_by_qa",
+                output=(
+                    "AI execution and independent QA are complete. A human stakeholder must perform and record this sign-off; the AI workforce has not signed on anyone's behalf."
+                    if approved else "Human sign-off is blocked until the deliverable passes independent QA. " + summary
+                ),
+            )
+    signoff_count = sum(_is_human_signoff_subtask(item) for item in task.subtasks)
+    if signoff_count:
+        await TASKS.add_event(
+            task_id,
+            "Workforce Manager",
+            "human_signoff_pending" if approved else "human_signoff_blocked",
+            (
+                f"Independent QA passed. {signoff_count} sign-off subtask(s) remain pending for an authorised human decision."
+                if approved else f"Independent QA did not pass; {signoff_count} sign-off subtask(s) are blocked."
+            ),
+        )
+
+
 def _worker_context(task: PlanResponse, revision_notes: str | None = None) -> str:
     entries = task.shared_memory[-12:]
     memory_text = "\n\n".join(
@@ -183,6 +317,9 @@ async def _qa_review(task_id: str, task: PlanResponse, deliverable: str, discuss
     qa = _qa_agent(task)
     await TASKS.update_agent(task_id, str(qa["id"]), status="running")
     await TASKS.update(task_id, execution_status="reviewing", qa_status="in_progress")
+    for subtask in task.subtasks:
+        if _is_qa_subtask(subtask, qa):
+            await TASKS.update_subtask(task_id, subtask.id, status="in_progress")
     await TASKS.add_event(task_id, str(qa["name"]), "qa_started", "Independent QA is reviewing the integrated deliverable against the original mission.")
     system = (
         "You are the independent QA authority. You did not create the deliverable. Review it critically against the user's exact mission. "
@@ -290,26 +427,16 @@ async def _execute_task(task_id: str) -> None:
             if not active:
                 raise RuntimeError("The approved team has no execution specialists.")
             await TASKS.add_event(task_id, "Workforce Manager", "team_activated", f"Activated {len(active)} specialists in parallel; {len(idle)} additional team members remain on standby to control provider usage.")
+            await _mark_assigned_subtasks_in_progress(task_id, task, active)
             results = await asyncio.gather(*[_run_specialist(task_id, task, agent) for agent in active])
             results = await _recover_failed_workers(task_id, task, results)
             if any(item.get("error") for item in results):
                 raise RuntimeError("One or more specialist workstreams failed after bounded recovery.")
             task = await TASKS.get(task_id)
             assert task is not None
-            grouped_outputs: dict[str, list[str]] = {}
-            for index, item in enumerate(results):
-                if task.subtasks:
-                    subtask = task.subtasks[index % len(task.subtasks)]
-                    grouped_outputs.setdefault(subtask.id, []).append(
-                        f"[{item['agent']['name']}]\n{item['output'][:3500]}"
-                    )
-            for subtask in task.subtasks:
-                outputs = grouped_outputs.get(subtask.id, [])
-                if outputs:
-                    await TASKS.update_subtask(
-                        task_id, subtask.id, status="completed",
-                        output="\n\n".join(outputs)[:10000],
-                    )
+            await _record_specialist_subtasks(task_id, task, results)
+            task = await TASKS.get(task_id)
+            assert task is not None
             discussion = await _team_deliberation(task_id, task, results)
             deliverable = await _compile_deliverable(task_id, task, results, discussion)
             verdict: dict[str, Any] | None = None
@@ -337,10 +464,16 @@ async def _execute_task(task_id: str) -> None:
                 discussion = await _team_deliberation(task_id, task, results)
                 deliverable = await _compile_deliverable(task_id, task, results, discussion, notes)
             if verdict and verdict["decision"] == "approve":
+                task = await TASKS.get(task_id)
+                assert task is not None
+                await _reconcile_qa_and_signoff_subtasks(task_id, task, qa, verdict)
                 await TASKS.update(task_id, execution_status="completed", qa_status="passed", qa_feedback=json.dumps(verdict, ensure_ascii=False), result_markdown=deliverable)
-                await TASKS.add_event(task_id, str(qa["name"]), "task_completed", "Independent AI QA approved the final draft. No external tools or code execution were used in this milestone.")
+                await TASKS.add_event(task_id, str(qa["name"]), "task_completed", "Independent AI QA approved the final draft. Human sign-off subtasks, if any, remain explicitly pending; no external tools or code execution were used in this milestone.")
             else:
+                task = await TASKS.get(task_id)
+                assert task is not None
                 summary = verdict["summary"] if verdict else "QA did not return a valid approval."
+                await _reconcile_qa_and_signoff_subtasks(task_id, task, qa, verdict or {"decision": "revise", "summary": summary})
                 await TASKS.update(task_id, execution_status="revision_required", qa_status="rejected", qa_feedback=json.dumps(verdict or {}, ensure_ascii=False))
                 await TASKS.add_event(task_id, str(qa["name"]), "human_review_required", f"QA did not approve the deliverable after the bounded revision cycle: {summary}")
         except Exception as exc:

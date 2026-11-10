@@ -23,7 +23,11 @@ class ExecutionPipelineTests(unittest.IsolatedAsyncioTestCase):
                 AgentPlan(id="ops", name="Operations Planner", role="Operations Specialist", personality="methodical", task="Create an operations checklist."),
                 AgentPlan(id="qa", name="QA Verifier", role="Independent QA Verifier", personality="skeptical", task="Independently review the final deliverable."),
             ],
-            subtasks=[SubtaskPlan(id="s1", title="Event operations", owner="Operations Planner")],
+            subtasks=[
+                SubtaskPlan(id="s1", title="Event operations", owner="Operations Planner"),
+                SubtaskPlan(id="s2", title="Prepare the independent QA checklist", owner="QA Verifier"),
+                SubtaskPlan(id="s3", title="Obtain formal human sign-off from the project sponsor", owner="Project Director"),
+            ],
         )
 
     async def test_approved_task_runs_workers_and_independent_qa(self):
@@ -55,6 +59,43 @@ class ExecutionPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(result.shared_memory), 4)
         self.assertTrue(any(event.kind == "team_deliberation" for event in result.events))
         self.assertTrue(any(message.kind == "qa_verdict" for message in result.messages))
+        subtasks = {item.id: item for item in result.subtasks}
+        self.assertEqual(subtasks["s1"].status, "completed")
+        self.assertIn("[Operations Planner]", subtasks["s1"].output or "")
+        self.assertEqual(subtasks["s2"].status, "completed")
+        self.assertIn("Independent QA approved", subtasks["s2"].output or "")
+        self.assertEqual(subtasks["s3"].status, "awaiting_human_signoff")
+        self.assertIn("human stakeholder", subtasks["s3"].output or "")
+        self.assertTrue(any(event.kind == "human_signoff_pending" for event in result.events))
+
+
+    async def test_subtasks_are_not_completed_by_result_position_or_ambiguous_owner(self):
+        from app.execution import _record_specialist_subtasks
+
+        plan = self.make_plan().model_copy(update={
+            "subtasks": [
+                SubtaskPlan(id="owned", title="Write the operations plan", owner="Operations Planner"),
+                SubtaskPlan(id="unowned", title="Prepare the stakeholder brief", owner="External Stakeholder"),
+                SubtaskPlan(id="duplicate-a", title="Draft the first coordination item", owner="Project Manager"),
+                SubtaskPlan(id="duplicate-b", title="Draft the second coordination item", owner="Project Manager"),
+            ]
+        })
+        await TASKS.create(plan)
+        task = await TASKS.get(plan.task_id)
+        assert task is not None
+        results = [
+            {"agent": {"id": "director", "name": "Project Director", "role": "Project Manager"}, "output": "Director coordination output.", "error": None},
+            {"agent": {"id": "ops", "name": "Operations Planner", "role": "Operations Specialist"}, "output": "Operations plan output.", "error": None},
+        ]
+        await _record_specialist_subtasks(plan.task_id, task, results)
+        result = await TASKS.get(plan.task_id)
+        assert result is not None
+        statuses = {item.id: item.status for item in result.subtasks}
+        self.assertEqual(statuses["owned"], "completed")
+        self.assertEqual(statuses["unowned"], "planned")
+        self.assertEqual(statuses["duplicate-a"], "planned")
+        self.assertEqual(statuses["duplicate-b"], "planned")
+        self.assertTrue(any(event.kind == "subtask_mapping_deferred" for event in result.events))
 
     async def test_persistent_pipeline_writes_all_use_the_active_execution_fence(self):
         import tempfile
@@ -132,6 +173,9 @@ class ExecutionPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(qa_calls, 2)
         self.assertEqual(result.execution_status, "completed")
         self.assertTrue(any(event.kind == "revision_cycle_started" for event in result.events))
+        subtasks = {item.id: item for item in result.subtasks}
+        self.assertEqual(subtasks["s2"].status, "completed")
+        self.assertEqual(subtasks["s3"].status, "awaiting_human_signoff")
 
 
     async def test_research_execution_collects_sources_and_preserves_citations(self):
@@ -239,6 +283,9 @@ class ExecutionPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.execution_status, "revision_required")
         self.assertEqual(result.qa_status, "rejected")
         self.assertIn("source evidence and disclosure integrity check", result.qa_feedback or "")
+        subtasks = {item.id: item for item in result.subtasks}
+        self.assertEqual(subtasks["s2"].status, "revision_required")
+        self.assertEqual(subtasks["s3"].status, "blocked_by_qa")
 
 
     async def test_demo_plan_cannot_be_executed_as_live_agents(self):

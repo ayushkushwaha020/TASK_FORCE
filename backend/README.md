@@ -113,6 +113,10 @@ Without configured providers, the planner returns a clearly labelled local demo 
 
 Agents do not yet have browser, filesystem, terminal, or external-action tools. They must not claim to have run code, browsed websites, contacted anyone, or verified external facts. AI QA is not a substitute for deterministic tests or human review. Model-generated content and shared memory are treated as untrusted data, not authority to change system safeguards.
 
+### Workstream and subtask status semantics
+
+Subtasks are not completed by their position in the plan. A specialist output is attached only when the subtask owner exactly and uniquely matches that specialist's name, role, or ID; ambiguous or unmatched owner mappings remain open and emit a `subtask_mapping_deferred` event. Matched work moves through `in_progress` to `completed` only after a successful specialist result. QA-related subtasks are completed only after the independent reviewer returns an approval; a failed final QA verdict leaves them at `revision_required`. Explicit sign-off tasks (for example, a formal, stakeholder, or go/no-go sign-off) are never completed by an AI agent: after QA passes they become `awaiting_human_signoff`, and if QA fails they become `blocked_by_qa`. Task-level `completed` means the AI deliverable passed QA; it does not imply that any pending human sign-off has happened.
+
 ## Supabase Postgres task storage (V3)
 
 The recommended hosted database is **Supabase Postgres**. Set the connection URI in the backend-only `DATABASE_URL` environment variable. Do not put the URI in the frontend or commit it to GitHub.
