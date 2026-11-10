@@ -21,6 +21,7 @@ type ProviderInfo = {
   max_requests_per_hour: number | null; requests_this_hour: number;
   max_requests_per_minute?: number; requests_this_minute?: number;
   min_request_interval_seconds?: number; cooldown_seconds?: number;
+  cooldown_info?: { kind?: string; label?: string; quota_id?: string | null; quota_metric?: string | null; reset_at?: string | null };
   ready?: boolean; cooling_down: boolean;
 };
 type ProviderTest = { name: string; protocol: string; model: string; status: "connected" | "failed" | "skipped"; latency_ms: number | null; message: string };
@@ -91,12 +92,23 @@ function qaStatusLabel(status: string) {
   return labels[status] || status.replaceAll("_", " ");
 }
 
+function formatWait(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const remainder = total % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${remainder}s`;
+  return `${remainder}s`;
+}
+
 function subtaskStatusLabel(status: string) {
   const labels: Record<string, string> = {
     planned: "Planned",
     in_progress: "In progress",
     completed: "Completed",
     failed: "Failed",
+    blocked_by_provider: "Provider blocked",
     revision_required: "Revision required",
     awaiting_human_signoff: "Awaiting human sign-off",
     blocked_by_qa: "Blocked by QA",
@@ -105,17 +117,30 @@ function subtaskStatusLabel(status: string) {
   return labels[status] || status.replaceAll("_", " ");
 }
 
+function visibleAgentStatus(agent: Agent, plan: TaskPlan) {
+  if (agent.status === "blocked_by_provider") return agent.status;
+  // Interpret legacy V5.2 snapshots: agents rejected before a model response
+  // because the shared provider was cooling down are blocked, not failed.
+  if (agent.status === "failed" && plan.events.some((event) =>
+    event.actor === agent.name && event.kind === "agent_failed" &&
+    /ProviderUnavailableError|provider is unavailable|cooling down|request budget|daily quota|rate limit/i.test(event.message)
+  )) return "blocked_by_provider";
+  return agent.status;
+}
+
 function visibleSubtaskStatus(subtask: Subtask, plan: TaskPlan) {
-  if (subtask.status !== "in_progress") return subtask.status;
+  if (!["in_progress", "failed", "blocked_by_provider"].includes(subtask.status)) return subtask.status;
   const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const owner = normalize(subtask.owner);
   const agent = plan.agents.find((item) => [item.name, item.role, item.id].some((alias) => normalize(alias) === owner));
   if (!agent) return subtask.status;
   const hasOwnOutput = plan.shared_memory.some((item) => item.source_agent === agent.name && item.content.trim().length > 0);
   const hasRecoveredOutput = plan.shared_memory.some((item) => item.title.toLowerCase().includes(`recovered work for ${agent.name.toLowerCase()}`));
-  if (agent.status === "completed" && hasOwnOutput) return "completed";
-  if (agent.status === "reassigned" && hasRecoveredOutput) return "completed";
-  if (agent.status === "failed") return "failed";
+  const effectiveStatus = visibleAgentStatus(agent, plan);
+  if (effectiveStatus === "completed" && hasOwnOutput) return "completed";
+  if (effectiveStatus === "reassigned" && hasRecoveredOutput) return "completed";
+  if (effectiveStatus === "failed") return "failed";
+  if (effectiveStatus === "blocked_by_provider") return "blocked_by_provider";
   return subtask.status;
 }
 
@@ -382,10 +407,11 @@ export default function App() {
     }
   }
 
-  const completedAgentCount = plan?.agents.filter((agent) => ["completed", "reassigned"].includes(agent.status)).length ?? 0;
-  const failedAgentCount = plan?.agents.filter((agent) => agent.status === "failed").length ?? 0;
-  const runningAgentCount = plan?.agents.filter((agent) => agent.status === "running").length ?? 0;
-  const waitingAgentCount = Math.max(0, (plan?.agents.length ?? 0) - completedAgentCount - failedAgentCount - runningAgentCount);
+  const completedAgentCount = plan?.agents.filter((agent) => ["completed", "reassigned"].includes(visibleAgentStatus(agent, plan))).length ?? 0;
+  const failedAgentCount = plan?.agents.filter((agent) => visibleAgentStatus(agent, plan) === "failed").length ?? 0;
+  const blockedAgentCount = plan?.agents.filter((agent) => visibleAgentStatus(agent, plan) === "blocked_by_provider").length ?? 0;
+  const runningAgentCount = plan?.agents.filter((agent) => visibleAgentStatus(agent, plan) === "running").length ?? 0;
+  const waitingAgentCount = Math.max(0, (plan?.agents.length ?? 0) - completedAgentCount - failedAgentCount - blockedAgentCount - runningAgentCount);
   const statusLabelText = providerConfigured === true ? "Live provider connected" : providerConfigured === false ? "Demo planning mode" : "Backend not connected";
   const taskSummary = useMemo(() => plan?.subtasks.length ? plan.subtasks.length + " workstreams" : "Ready for your first task", [plan]);
   const qaFeedback = useMemo(() => {
@@ -401,7 +427,7 @@ export default function App() {
       : plan.qa_status
   );
   const missionOutputs = plan?.shared_memory.filter((item) => item.content.trim().length > 0) ?? [];
-  const failureEvents = plan?.events.filter((event) => ["agent_failed", "recovery_failed", "execution_failed"].includes(event.kind)) ?? [];
+  const failureEvents = plan?.events.filter((event) => ["agent_failed", "agent_deferred", "recovery_failed", "recovery_deferred", "execution_failed"].includes(event.kind)) ?? [];
   const failureDetailsCaptured = failureEvents.some((event) => /\([A-Za-z0-9_]+\):\s/.test(event.message));
 
   return (
@@ -514,12 +540,15 @@ export default function App() {
                     {failureEvents.length > 0 ? failureEvents.slice().reverse().map((item) => (
                       <div className="diagnostic-event" key={item.id}>
                         <div className="feed-meta"><b>{item.actor}</b><span>{timestamp(item.timestamp)}</span></div>
-                        <strong>{item.kind.replaceAll("_", " ")}</strong>
+                        <strong>{item.kind === "agent_failed" && /ProviderUnavailableError|cooling down|request budget|daily quota|rate limit/i.test(item.message) ? "blocked by provider" : item.kind.replaceAll("_", " ")}</strong>
                         <p>{item.message}</p>
                       </div>
                     )) : <p>The run stopped, but no detailed failure event was saved.</p>}
                     {!failureDetailsCaptured && <div className="diagnostic-note"><b>Historical log limitation:</b> This run saved only the exception type <code>RuntimeError</code>, not the underlying provider response. The historical record cannot confirm whether it was an HTTP 429 rate limit, a transport issue, or another provider error.</div>}
                     {qaDisplayStatus === "not_run" && <div className="diagnostic-note"><b>QA was not run.</b> Specialist execution stopped before the independent reviewer started. This is not a QA rejection.</div>}
+                    {failureEvents.some((item) => /daily quota exhausted/i.test(item.message)) && <div className="diagnostic-note"><b>Gemini daily quota exhausted.</b> This is a provider/project quota reset, not an application timer. Check the live usage in <a href="https://ai.dev/usage?tab=rate-limit" target="_blank" rel="noreferrer">Google AI Studio usage</a> before retrying.</div>}
+                    {blockedAgentCount > 0 && <div className="diagnostic-note"><b>{blockedAgentCount} specialist(s) were blocked before receiving a model response.</b> They are not counted as execution failures. Their workstreams can be resumed when the provider becomes available.</div>}
+                    {failureEvents.some((item) => /cooling down for about (\d+)s|retry after about (\d+) seconds/i.test(item.message)) && <div className="diagnostic-note"><b>Provider-supplied retry window.</b> The long wait comes from the upstream provider response, not a hardcoded app timer. Check the current project/model quota in <a href="https://ai.dev/usage?tab=rate-limit" target="_blank" rel="noreferrer">Google AI Studio usage</a>; a daily quota may remain blocked until its reset.</div>}
                     {plan.approval_status === "approved" && qaDisplayStatus !== "passed" && qaDisplayStatus !== "rejected" && <div className="diagnostic-retry-row"><div><b>Resume this mission</b><small>Completed specialist documents are saved. Only failed or unfinished roles will be called again.</small></div><button className="send-button" onClick={retryFailedWorkstreams} disabled={retryLoading}>{retryLoading ? <LoaderCircle className="spin" size={15} /> : <Zap size={15} />} {retryLoading ? "Queueing retry..." : "Retry unfinished workstreams"}</button></div>}
                     {providerDetails.length === 1 && !fallbackConfigured && <div className="diagnostic-note"><b>Single-provider setup:</b> All specialists share one AI provider quota. Add a second provider in Provider settings / the backend environment to enable automatic failover. Current local pacing: up to {providerDetails[0]?.max_requests_per_minute ?? 4} requests per minute, with a {providerDetails[0]?.min_request_interval_seconds ?? 15}-second minimum interval.</div>}
                   </div>
@@ -538,16 +567,16 @@ export default function App() {
               <div className="metric-row">
                 <div className="metric-card"><span>TEAM SIZE</span><b>{plan.agents.length}</b><small>Specialists assembled</small></div>
                 <div className="metric-card"><span>COMPLETED</span><b>{completedAgentCount}</b><small>Finished specialist roles</small></div>
-                <div className="metric-card"><span>FAILED</span><b>{failedAgentCount}</b><small>{runningAgentCount} working · {waitingAgentCount} waiting</small></div>
+                <div className="metric-card"><span>FAILED / BLOCKED</span><b>{failedAgentCount + blockedAgentCount}</b><small>{failedAgentCount} failed · {blockedAgentCount} provider blocked</small></div>
               </div>
 
               <section className="team-robot-stage">
-                <div className="team-stage-heading"><div><span className="eyebrow"><Activity size={13} /> SPECIALIST FLOOR</span><b>Your bots, in their current work states</b></div><span>{completedAgentCount} completed · {failedAgentCount} failed · {runningAgentCount} working · {waitingAgentCount} waiting</span></div>
-                <div className="team-robot-row">{plan.agents.map((agent, index) => <div className="team-robot-item" key={agent.id}><Robot agent={agent} index={index} /><b>{agent.name}</b><small>{agent.status.replaceAll("_", " ")}</small></div>)}</div>
+                <div className="team-stage-heading"><div><span className="eyebrow"><Activity size={13} /> SPECIALIST FLOOR</span><b>Your bots, in their current work states</b></div><span>{completedAgentCount} completed · {blockedAgentCount} provider blocked · {failedAgentCount} failed · {runningAgentCount} working · {waitingAgentCount} waiting</span></div>
+                <div className="team-robot-row">{plan.agents.map((agent, index) => { const displayStatus = visibleAgentStatus(agent, plan); return <div className="team-robot-item" key={agent.id}><Robot agent={{ ...agent, status: displayStatus }} index={index} /><b>{agent.name}</b><small>{displayStatus === "blocked_by_provider" ? "Blocked by provider" : displayStatus.replaceAll("_", " ")}</small></div>; })}</div>
               </section>
 
               <div className="workspace-columns">
-                <section className="panel"><div className="panel-heading"><h3><Users size={17} /> Your specialist team</h3><span>{plan.agents.length} agents</span></div><div className="agent-list">{plan.agents.map((agent) => <div className="agent-row" key={agent.id}><div className={"agent-avatar bot-" + robotVariant(agent)} style={{ backgroundImage: `url("${ROBOT_ATLAS_URL}")` }} role="img" aria-label={agent.name + " robot"} /><div className="agent-info"><b>{agent.name}</b><span>{agent.role} · {agent.personality}</span><small>{agent.task}</small></div><span className={"agent-status status-" + agent.status}>{agent.status.replaceAll("_", " ")}</span></div>)}</div></section>
+                <section className="panel"><div className="panel-heading"><h3><Users size={17} /> Your specialist team</h3><span>{plan.agents.length} agents</span></div><div className="agent-list">{plan.agents.map((agent) => { const displayStatus = visibleAgentStatus(agent, plan); return <div className="agent-row" key={agent.id}><div className={"agent-avatar bot-" + robotVariant(agent)} style={{ backgroundImage: `url("${ROBOT_ATLAS_URL}")` }} role="img" aria-label={agent.name + " robot"} /><div className="agent-info"><b>{agent.name}</b><span>{agent.role} · {agent.personality}</span><small>{agent.task}</small></div><span className={"agent-status status-" + displayStatus}>{displayStatus === "blocked_by_provider" ? "provider blocked" : displayStatus.replaceAll("_", " ")}</span></div>; })}</div></section>
                 <section className="panel"><div className="panel-heading"><h3><Workflow size={17} /> Workstreams</h3><span>{plan.subtasks.length} total</span></div><div className="subtask-list">{plan.subtasks.map((task, i) => { const displayStatus = visibleSubtaskStatus(task, plan); return <div className="subtask-row" key={task.id}><div className="step-number">{String(i + 1).padStart(2, "0")}</div><div><b>{task.title}</b><small>Owner: {task.owner}</small></div><span className={"planned-tag status-" + displayStatus}>{subtaskStatusLabel(displayStatus)}</span></div>; })}</div><div className={"qa-card qa-" + qaDisplayStatus}><ShieldCheck size={19} /><div><b>Independent QA · {qaStatusLabel(qaDisplayStatus)}</b><small>{qaDisplayStatus === "passed" ? "The reviewer approved the deliverable." : qaDisplayStatus === "rejected" ? "The independent reviewer rejected the draft after reviewing it." : qaDisplayStatus === "failed" ? "The reviewer started but could not complete a valid review." : qaDisplayStatus === "not_run" ? "No QA decision was made because prerequisite specialist execution stopped first." : "The independent reviewer will inspect the integrated work after the specialists report."}</small></div></div></section>
               </div>
 
@@ -574,7 +603,7 @@ export default function App() {
         )}
 
         {view === "settings" && (
-          <div className="settings-view"><div className="eyebrow"><Settings2 size={14} /> CONFIGURATION</div><h1>Provider <span>settings</span></h1><p className="settings-intro">Provider credentials stay on the backend. This public browser interface never receives or stores API keys.</p><div className="settings-card"><div className="settings-card-head"><div className="provider-icon"><Zap size={20} /></div><div><b>Multi-provider router</b><small>Priority routing · local request budgets · bounded failover</small></div><span className={providerConfigured ? "connected-tag" : "pending-tag"}>{providerConfigured ? "Configured" : "Not configured"}</span></div><div className="settings-detail"><div><span>Configured endpoints</span><b>{providerConfigured === null ? "Backend not reachable" : providerDetails.length ? String(providerDetails.length) + " provider(s)" : "Demo planning mode"}</b></div><div><span>Fallback model</span><b>{fallbackConfigured ? "Configured" : "Not configured"}</b></div><div><span>Credential storage</span><b>Backend environment only</b></div><div><span>Live web research</span><b>{webResearchConfigured ? "Tavily configured" : "Not configured"}</b></div></div>{configurationError && <div className="error-banner">Provider configuration issue: {configurationError}</div>}<div className="settings-help">Configure multiple endpoints using AI_PROVIDERS_JSON in your Render backend environment. Each entry needs name, protocol, base_url, api_key, and model. Supported protocols: openai_compatible, gemini_generate_content, and anthropic_messages. Optional fields include priority, max_requests_per_hour, max_output_tokens, max_output_field, fallback_model, and api_version. The legacy AI_API_KEY, AI_PROVIDER_PROTOCOL, AI_API_BASE_URL, and AI_MODEL variables are also supported. Save the variables in Render, wait for redeployment, then refresh and create a fresh mission. Never paste API keys into chat or commit them to GitHub.</div><div className="provider-test-toolbar"><div><b>Test your configured endpoints</b><small>Each click sends one short test prompt per provider and consumes that provider's request quota.</small></div><button className="secondary-button" onClick={testProviderConnections} disabled={testingProviders || providerDetails.length === 0}>{testingProviders ? <LoaderCircle className="spin" size={15} /> : <Zap size={15} />} {testingProviders ? "Testing..." : "Test connections"}</button></div>{providerTestError && <div className="error-banner">{providerTestError}</div>}{providerTestedAt && <div className="test-timestamp">Last tested: {timestamp(providerTestedAt)}</div>}{providerDetails.length > 0 && <div className="provider-list">{providerDetails.map((provider) => { const result = providerTests.find((item) => item.name === provider.name); return <div className="provider-row" key={provider.name}><div><b>{provider.name}</b><small>{provider.model} · {provider.protocol.replaceAll("_", " ")}</small></div><span>{result ? (result.status.toUpperCase() + (result.latency_ms === null ? "" : " · " + result.latency_ms + " ms")) : provider.cooling_down ? "Cooling down · " + (provider.cooldown_seconds || 0) + "s" : (provider.requests_this_minute ?? 0) + " / " + (provider.max_requests_per_minute ?? 4) + " calls/min" + (provider.max_requests_per_hour ? " · " + provider.requests_this_hour + " / " + provider.max_requests_per_hour + " per hour" : "")}</span><i className={result ? "provider-test-" + result.status : provider.cooling_down ? "cooldown-indicator" : "ready-indicator"} /></div>; })}</div>}</div><div className="settings-card settings-security"><div className="settings-card-head"><div className="provider-icon"><ShieldCheck size={20} /></div><div><b>Task storage · V3</b><small>Durable history · API restart recovery</small></div><span className={durableStorageConfigured ? "connected-tag" : "pending-tag"}>{durableStorageConfigured ? "Persistent" : "Memory mode"}</span></div><div className="settings-detail"><div><span>Storage backend</span><b>{storageBackend === "supabase_postgresql" ? "SUPABASE POSTGRES" : storageBackend.toUpperCase()}</b></div><div><span>Restart persistence</span><b>{durableStorageConfigured ? "Enabled" : "Not configured"}</b></div><div><span>Queue backend</span><b>{taskQueueBackend === "redis_streams" ? "REDIS STREAMS" : "IN-PROCESS PREVIEW"}</b></div><div><span>Durable queue</span><b>{durableQueueConfigured ? "Enabled" : "Not configured"}</b></div><div><span>Configuration</span><b>DATABASE_URL + REDIS_URL</b></div></div><div className="settings-help">Set DATABASE_URL in the Render backend Environment using the Supabase Transaction Pooler URI (port 6543), and REDIS_URL using your Upstash Redis TLS URL. Task snapshots are stored in a private schema with row-level security; approved jobs enter a durable Redis Stream. Both variables must be configured to enable queue mode. Without them, the app uses the in-process preview runner.</div><div className="settings-card-head"><div className="provider-icon"><ShieldCheck size={20} /></div><div><b>Execution and privacy boundaries</b><small>V3 preview guardrails</small></div></div><ul><li>Human approval is required before specialist execution.</li><li>API keys are read only by the backend.</li><li>Only up to eight specialists run in parallel in this preview.</li><li>QA can reject the draft and request one bounded revision pass.</li><li>Task history persists when Supabase DATABASE_URL is configured; otherwise demo mode uses process memory.</li><li>With Supabase and Redis configured, interrupted approved jobs are reclaimed from the durable queue after the configured idle lease; otherwise interrupted jobs are marked failed.</li><li>Agents do not yet have website, filesystem, or terminal tools.</li></ul></div></div>
+          <div className="settings-view"><div className="eyebrow"><Settings2 size={14} /> CONFIGURATION</div><h1>Provider <span>settings</span></h1><p className="settings-intro">Provider credentials stay on the backend. This public browser interface never receives or stores API keys.</p><div className="settings-card"><div className="settings-card-head"><div className="provider-icon"><Zap size={20} /></div><div><b>Multi-provider router</b><small>Priority routing · local request budgets · bounded failover</small></div><span className={providerConfigured ? "connected-tag" : "pending-tag"}>{providerConfigured ? "Configured" : "Not configured"}</span></div><div className="settings-detail"><div><span>Configured endpoints</span><b>{providerConfigured === null ? "Backend not reachable" : providerDetails.length ? String(providerDetails.length) + " provider(s)" : "Demo planning mode"}</b></div><div><span>Fallback model</span><b>{fallbackConfigured ? "Configured" : "Not configured"}</b></div><div><span>Credential storage</span><b>Backend environment only</b></div><div><span>Live web research</span><b>{webResearchConfigured ? "Tavily configured" : "Not configured"}</b></div></div>{configurationError && <div className="error-banner">Provider configuration issue: {configurationError}</div>}<div className="settings-help">Configure multiple endpoints using AI_PROVIDERS_JSON in your Render backend environment. Each entry needs name, protocol, base_url, api_key, and model. Supported protocols: openai_compatible, gemini_generate_content, and anthropic_messages. Optional fields include priority, max_requests_per_hour, max_output_tokens, max_output_field, fallback_model, and api_version. The legacy AI_API_KEY, AI_PROVIDER_PROTOCOL, AI_API_BASE_URL, and AI_MODEL variables are also supported. Save the variables in Render, wait for redeployment, then refresh and create a fresh mission. Never paste API keys into chat or commit them to GitHub.</div><div className="provider-test-toolbar"><div><b>Test your configured endpoints</b><small>Each click sends one short test prompt per provider and consumes that provider's request quota.</small></div><button className="secondary-button" onClick={testProviderConnections} disabled={testingProviders || providerDetails.length === 0}>{testingProviders ? <LoaderCircle className="spin" size={15} /> : <Zap size={15} />} {testingProviders ? "Testing..." : "Test connections"}</button></div>{providerTestError && <div className="error-banner">{providerTestError}</div>}{providerTestedAt && <div className="test-timestamp">Last tested: {timestamp(providerTestedAt)}</div>}{providerDetails.length > 0 && <div className="provider-list">{providerDetails.map((provider) => { const result = providerTests.find((item) => item.name === provider.name); return <div className="provider-row" key={provider.name}><div><b>{provider.name}</b><small>{provider.model} · {provider.protocol.replaceAll("_", " ")}</small></div><span>{result ? (result.status.toUpperCase() + (result.latency_ms === null ? "" : " · " + result.latency_ms + " ms")) : provider.cooling_down ? ((provider.cooldown_info?.label || "Provider blocked") + " · " + formatWait(provider.cooldown_seconds || 0)) : (provider.requests_this_minute ?? 0) + " / " + (provider.max_requests_per_minute ?? 4) + " calls/min" + (provider.max_requests_per_hour ? " · " + provider.requests_this_hour + " / " + provider.max_requests_per_hour + " per hour" : "")}</span><i className={result ? "provider-test-" + result.status : provider.cooling_down ? "cooldown-indicator" : "ready-indicator"} /></div>; })}</div>}</div><div className="settings-card settings-security"><div className="settings-card-head"><div className="provider-icon"><ShieldCheck size={20} /></div><div><b>Task storage · V3</b><small>Durable history · API restart recovery</small></div><span className={durableStorageConfigured ? "connected-tag" : "pending-tag"}>{durableStorageConfigured ? "Persistent" : "Memory mode"}</span></div><div className="settings-detail"><div><span>Storage backend</span><b>{storageBackend === "supabase_postgresql" ? "SUPABASE POSTGRES" : storageBackend.toUpperCase()}</b></div><div><span>Restart persistence</span><b>{durableStorageConfigured ? "Enabled" : "Not configured"}</b></div><div><span>Queue backend</span><b>{taskQueueBackend === "redis_streams" ? "REDIS STREAMS" : "IN-PROCESS PREVIEW"}</b></div><div><span>Durable queue</span><b>{durableQueueConfigured ? "Enabled" : "Not configured"}</b></div><div><span>Configuration</span><b>DATABASE_URL + REDIS_URL</b></div></div><div className="settings-help">Set DATABASE_URL in the Render backend Environment using the Supabase Transaction Pooler URI (port 6543), and REDIS_URL using your Upstash Redis TLS URL. Task snapshots are stored in a private schema with row-level security; approved jobs enter a durable Redis Stream. Both variables must be configured to enable queue mode. Without them, the app uses the in-process preview runner.</div><div className="settings-card-head"><div className="provider-icon"><ShieldCheck size={20} /></div><div><b>Execution and privacy boundaries</b><small>V3 preview guardrails</small></div></div><ul><li>Human approval is required before specialist execution.</li><li>API keys are read only by the backend.</li><li>Only up to eight specialists run in parallel in this preview.</li><li>QA can reject the draft and request one bounded revision pass.</li><li>Task history persists when Supabase DATABASE_URL is configured; otherwise demo mode uses process memory.</li><li>With Supabase and Redis configured, interrupted approved jobs are reclaimed from the durable queue after the configured idle lease; otherwise interrupted jobs are marked failed.</li><li>Agents do not yet have website, filesystem, or terminal tools.</li></ul></div></div>
         )}
       </section>
 
