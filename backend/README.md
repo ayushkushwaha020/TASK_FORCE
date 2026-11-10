@@ -16,7 +16,8 @@ uvicorn app.main:app --reload --port 8000
 - `GET /api/config/status` — provider names, protocols, models, local budget usage, and status; never returns secrets.
 - `POST /api/providers/test` — user-triggered, one-request connectivity test per configured provider; reports status/latency without returning credentials.
 - `POST /api/tasks/plan` — create a proposed team plan. JSON: `{"instruction":"..." }`.
-- `GET /api/tasks/{task_id}` — poll task state, events, shared memory, messages, QA, and deliverable.
+- `GET /api/tasks/{task_id}` — retrieve task state, events, shared memory, messages, QA, and deliverable.
+- `GET /api/tasks/{task_id}/stream` — Server-Sent Events stream for task activity and status updates; clients can reconnect using `Last-Event-ID`.
 - `POST /api/tasks/{task_id}/approval` — JSON `{"decision":"approve"}` or `{"decision":"reject","reason":"..." }`.
 
 ## Provider router
@@ -112,9 +113,33 @@ Without configured providers, the planner returns a clearly labelled local demo 
 
 Agents do not yet have browser, filesystem, terminal, or external-action tools. They must not claim to have run code, browsed websites, contacted anyone, or verified external facts. AI QA is not a substitute for deterministic tests or human review. Model-generated content and shared memory are treated as untrusted data, not authority to change system safeguards.
 
+## Supabase Postgres task storage (V3)
+
+The recommended hosted database is **Supabase Postgres**. Set the connection URI in the backend-only `DATABASE_URL` environment variable. Do not put the URI in the frontend or commit it to GitHub.
+
+**Render connection mode:** Render services use IPv4 networking. In Supabase Dashboard choose **Connect → Transaction pooler** and copy its PostgreSQL URI (port `6543`). The adapter disables both SQLAlchemy's prepared-statement cache and asyncpg's driver cache for this mode. Session pooler (port `5432`) is also supported. Supabase SSL is required automatically for Supabase pooler hosts.
+
+On startup, SQLAlchemy creates the `workforce_private.workforce_tasks` table. The app persists the entire task snapshot: agents, workstreams, events, messages, shared memory, research sources, QA state, and deliverables. The schema is deliberately separate from the exposed `public` API schema, and the adapter enables row-level security and revokes access from `PUBLIC`, `anon`, and `authenticated`. Only the backend's private database connection should access these records.
+
+For local development, SQLite remains supported with `DATABASE_URL=sqlite:///./workforce.db`. If no URL is configured, the app falls back to process memory and task history is cleared on restart.
+
+When Redis queue mode is not configured, the runner uses FastAPI background tasks; an API restart restores the task snapshot but marks in-flight work failed with an `execution_interrupted` event. When both Supabase `DATABASE_URL` and Redis `REDIS_URL` are configured, approved jobs are requeued through Redis Streams and reclaimed after the idle threshold. Existing in-memory V2 tasks are not backfilled into Supabase.
+
+Set `DATABASE_URL` in Render Dashboard → backend service → Environment. Never paste the database password into chat, GitHub, or browser code.
+
+## Durable Redis Streams worker queue (V3 slice)
+
+To enable durable approved-task delivery, configure both `DATABASE_URL` (Supabase Postgres) and `REDIS_URL` (Upstash Redis TLS URL) on the backend. The queue is deliberately disabled unless both values are configured; Redis alone is rejected because a queued message without a durable task snapshot cannot survive an API restart.
+
+Approved plans are appended to the `workforce:approved-tasks` stream and consumed by a Redis consumer group. Pending entries can be reclaimed after the configured idle interval (`WORKFORCE_QUEUE_CLAIM_IDLE_MS`, default 15 minutes); the idle-reclaim scan interval is controlled by `WORKFORCE_QUEUE_CLAIM_SCAN_SECONDS` (default 60 seconds). The worker acknowledges a message only after the task reaches a terminal state. Repeated delivery failures are capped and moved to the `workforce:dead-tasks` dead-letter stream.
+
+The current preview runs one queue consumer inside the FastAPI service. The task SSE endpoint reads the same API process task state and emits event/status changes; it is not yet a cross-process Redis Pub/Sub fanout. This demonstrates durable queueing and process-restart reclamation without requiring a separate paid worker service. The default 15-minute idle threshold avoids reclaiming ordinary long-running jobs too early; jobs lasting beyond the threshold still need a heartbeat extension before horizontal scaling. Do not scale the API horizontally yet: multi-instance execution needs distributed job leases/heartbeats, worker concurrency coordination, and duplicate-execution protection. The existing provider router remains separately rate-limited; a Redis-backed shared quota counter is not yet implemented.
+
+Upstash Redis Free currently lists 500,000 commands/month, 256 MB data, and 10 GB monthly bandwidth. The worker uses a 30-second blocking XREADGROUP call while idle and scans for stale jobs once per minute by default, roughly 130,000 idle commands/month before task traffic. XADD/XPENDING/XAUTOCLAIM/XACK/XDEL operations add to that usage; monitor actual usage in the Upstash console. https://upstash.com/pricing/redis
+
 ## Preview limitations
-- Tasks and shared memory are process-local and clear after a service restart.
-- Background work runs in the API process, not a durable queue.
+- With no `DATABASE_URL`, tasks and shared memory are process-local and clear after a service restart.
+- Even with durable snapshots, background work runs in the API process, not a durable queue; interrupted work is marked failed, not resumed.
 - Up to eight specialists execute concurrently; four provider calls run concurrently per process.
 - Local task and provider budgets are process-local. Production needs durable identity, global quotas, and abuse controls.
 - The provider adapter currently supports text prompt/response translation for the three protocols above; native multimodal uploads, tools, and provider-native function calling are future work.

@@ -245,7 +245,7 @@ async def _qa_review(task_id: str, task: PlanResponse, deliverable: str, discuss
     return verdict
 
 
-async def execute_task(task_id: str) -> None:
+async def _execute_task(task_id: str) -> None:
     """Execute an approved plan through model-backed specialists and independent AI QA."""
     async with _execution_semaphore:
         task = await TASKS.get(task_id)
@@ -346,3 +346,14 @@ async def execute_task(task_id: str) -> None:
         except Exception as exc:
             await TASKS.update(task_id, execution_status="failed", qa_status="rejected")
             await TASKS.add_event(task_id, "Workforce Recovery", "execution_failed", f"The execution pipeline stopped safely ({type(exc).__name__}). Review the task and start a new run after correcting the issue.")
+
+
+async def execute_task(task_id: str, lease: Any | None = None) -> None:
+    """Run the pipeline inside a task-scoped database fencing context.
+
+    ContextVars propagate into asyncio.gather() specialist/revision workers,
+    ensuring every TaskStore mutation uses the exact lease generation even
+    when a helper is added or changed later.
+    """
+    with TASKS.execution_lease(lease):
+        await _execute_task(task_id)

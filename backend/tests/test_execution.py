@@ -6,6 +6,7 @@ from unittest.mock import patch
 from app.execution import execute_task
 from app.schemas import AgentPlan, PlanResponse, SubtaskPlan
 from app.state import TASKS
+from app.worker_coordination import TaskLease
 
 
 class ExecutionPipelineTests(unittest.IsolatedAsyncioTestCase):
@@ -29,6 +30,8 @@ class ExecutionPipelineTests(unittest.IsolatedAsyncioTestCase):
         plan = self.make_plan()
         await TASKS.create(plan)
         await TASKS.update(plan.task_id, execution_status="queued", approval_status="approved")
+        lease = TaskLease(plan.task_id, "pipeline-test-owner", 1)
+        await TASKS.activate_execution_lease(plan.task_id, lease)
 
         async def fake_completion(messages, *, temperature=0.2, json_mode=False):
             system = messages[0]["content"]
@@ -41,7 +44,7 @@ class ExecutionPipelineTests(unittest.IsolatedAsyncioTestCase):
             return "Specialist findings: proposed schedule, operational tasks, budget assumptions, and open questions."
 
         with patch("app.execution.provider_is_configured", return_value=True), patch("app.execution.request_completion", side_effect=fake_completion):
-            await execute_task(plan.task_id)
+            await execute_task(plan.task_id, lease=lease)
 
         result = await TASKS.get(plan.task_id)
         self.assertIsNotNone(result)
@@ -52,6 +55,49 @@ class ExecutionPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(result.shared_memory), 4)
         self.assertTrue(any(event.kind == "team_deliberation" for event in result.events))
         self.assertTrue(any(message.kind == "qa_verdict" for message in result.messages))
+
+    async def test_persistent_pipeline_writes_all_use_the_active_execution_fence(self):
+        import tempfile
+        from pathlib import Path
+        from app.state import TaskStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            url = "sqlite+aiosqlite:///" + str(Path(directory) / "execution-fenced.db")
+            store = TaskStore(url)
+            await store.initialize()
+            plan = self.make_plan()
+            await store.create(plan)
+            await store.update(
+                plan.task_id, execution_status="queued", approval_status="approved"
+            )
+            lease = TaskLease(plan.task_id, "persistent-pipeline-owner", 1)
+            await store.activate_execution_lease(plan.task_id, lease)
+
+            async def fake_completion(messages, *, temperature=0.2, json_mode=False):
+                system = messages[0]["content"]
+                if "independent QA authority" in system:
+                    return json.dumps({
+                        "decision": "approve", "summary": "The deliverable is complete.",
+                        "issues": [], "revision_instructions": "", "affected_agents": [],
+                    })
+                if "facilitating a transparent" in system:
+                    return "The team aligned on the delivery plan and captured remaining assumptions."
+                if "principal editor" in system:
+                    return "# Campus Event Plan\n\nThe event plan includes roles, timing, and risks."
+                return "The specialist mapped the assigned workstream, decisions, and open questions."
+
+            with patch("app.execution.TASKS", store), \
+                 patch("app.execution.provider_is_configured", return_value=True), \
+                 patch("app.execution.request_completion", side_effect=fake_completion):
+                await execute_task(plan.task_id, lease=lease)
+
+            result = await store.get(plan.task_id)
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(result.execution_status, "completed")
+            self.assertEqual(result.execution_fence, lease.generation)
+            self.assertTrue(result.result_markdown)
+            await store.close()
 
     async def test_qa_can_reject_then_request_a_revision(self):
         plan = self.make_plan()

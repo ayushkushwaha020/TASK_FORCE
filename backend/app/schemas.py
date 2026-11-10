@@ -60,8 +60,6 @@ class AgentMessage(BaseModel):
     content: str
 
 
-
-
 class ResearchSource(BaseModel):
     source_id: str
     query: str
@@ -82,9 +80,12 @@ class PlanResponse(BaseModel):
     notice: str
     agents: list[AgentPlan]
     subtasks: list[SubtaskPlan]
+    # Concurrency metadata is part of every canonical task snapshot.
+    version: int = Field(default=1, ge=0)
+    execution_fence: int = Field(default=0, ge=0)
     execution_status: Literal[
         "awaiting_approval", "queued", "running", "reviewing",
-        "completed", "revision_required", "failed", "rejected"
+        "completed", "revision_required", "failed", "rejected", "cancelled"
     ] = "awaiting_approval"
     approval_status: Literal["pending", "approved", "rejected"] = "pending"
     qa_status: Literal["pending_execution", "in_progress", "passed", "rejected"] = "pending_execution"

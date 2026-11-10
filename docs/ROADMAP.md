@@ -8,7 +8,7 @@
 - [x] Demo vs provider-backed plan status
 - [x] Initial hosting on Render
 
-## V2 — Agent execution preview (current)
+## V2 — Agent execution preview (delivered foundation)
 - [x] Human approval before internal AI execution
 - [x] Parallel model-backed specialist workstreams
 - [x] Shared task memory
@@ -19,18 +19,33 @@
 - [x] One bounded revision cycle
 - [x] Bounded retry, optional fallback model, and one workstream reassignment
 - [x] Frontend polling, activity timeline, shared-memory feed, and QA view
-- [ ] Durable task persistence and background worker queue
-- [x] Capped Tavily search for research tasks with URL/snippet source capture\n- [x] Source-ID citations and independent QA integrity check\n- [x] Markdown download and browser print-to-PDF export\n- [ ] General browser navigation/page extraction
+- [x] Server-Sent Events task stream with EventSource frontend updates and polling fallback (single API process)
+- [x] Durable Redis Streams queue and single-process worker recovery (V3; cross-process fanout remains open)
+- [x] Capped Tavily search for research tasks with URL/snippet source capture
+- [x] Source-ID citations and independent QA integrity check
+- [x] Markdown download and browser print-to-PDF export\n- [ ] General browser navigation/page extraction
 - [ ] Sandboxed code execution and deterministic test evidence
 - [ ] Human approval queue for external/destructive actions
-- [ ] Multi-provider quota-aware router
+- [x] Multi-provider quota-aware router
 
-## V3 — Tools and production controls
+## V3 — Persistence and production controls (in progress)
+- [x] SQLAlchemy-backed Supabase Postgres adapter with SSL, pooler support, private schema, and row-level security
+- [x] Unit tests for Supabase pooler URL normalization, SQLite URL normalization, and private schema selection
+- [x] Versioned SQL migration prepared for Supabase; live application waits for project provisioning
+- [x] Restore task history, shared memory, messages, research sources, events, and deliverables after API restart
+- [x] Preserve queued durable jobs and route ambiguous interrupted provider runs to human review without automatic replay
+- [ ] Provision Supabase Free project and configure the Render backend connection (blocked by account approval/login)
+- [ ] Apply migration and verify real Supabase create/read/update/restart behavior
+- [x] Redis Streams durable queue, consumer group, bounded delivery attempts, dead-letter stream, and stale-job reclamation (single API worker preview)
+- [x] Redis lease coordinator with token-checked acquire/renew/release, preflight ownership checks, heartbeat cancellation, and real-Redis integration tests
+- [x] Atomic task versioning, monotonic execution-fence activation, and stale-write rejection at the repository boundary
+- [x] Canonical TaskStore reads and lease-aware mutations for status, agents, subtasks, events, memory, sources, and messages; async specialist tasks inherit the scoped lease and unscoped post-fence writes are rejected
+- [x] Wire Redis lease acquisition, monotonic database-fence activation, heartbeat supervision, and scoped fencing through the complete execution pipeline
+- [x] Multi-instance Redis Pub/Sub event fanout and 15-second SSE reconciliation (local two-instance Redis/SQLite integration passed; hosted Upstash/Supabase validation remains a release gate)
 - [ ] Permission-scoped browser/search tools
 - [ ] Isolated code runner
 - [ ] File ingestion and document generation
 - [ ] Approval queue and audit trail
-- [ ] Postgres persistence and Redis job/event queue
 - [ ] User identities, quotas, and abuse protection
 - [ ] Cost and token budgets per task/team
 - [ ] Multi-provider adapter registry

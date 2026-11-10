@@ -87,6 +87,10 @@ export default function App() {
   const [error, setError] = useState("");
   const [providerConfigured, setProviderConfigured] = useState<boolean | null>(null);
   const [webResearchConfigured, setWebResearchConfigured] = useState(false);
+  const [storageBackend, setStorageBackend] = useState("unknown");
+  const [durableStorageConfigured, setDurableStorageConfigured] = useState(false);
+  const [taskQueueBackend, setTaskQueueBackend] = useState("background_tasks_preview");
+  const [durableQueueConfigured, setDurableQueueConfigured] = useState(false);
   const [fallbackConfigured, setFallbackConfigured] = useState(false);
   const [providerDetails, setProviderDetails] = useState<ProviderInfo[]>([]);
   const [configurationError, setConfigurationError] = useState<string | null>(null);
@@ -101,6 +105,10 @@ export default function App() {
       .then((data) => {
         setProviderConfigured(Boolean(data.provider_configured));
         setWebResearchConfigured(Boolean(data.web_research_configured));
+        setStorageBackend(String(data.storage_backend || "memory"));
+        setDurableStorageConfigured(Boolean(data.durable_storage_configured));
+        setTaskQueueBackend(String(data.task_queue_backend || "background_tasks_preview"));
+        setDurableQueueConfigured(Boolean(data.durable_queue_configured));
         setFallbackConfigured(Boolean(data.fallback_configured));
         setProviderDetails(Array.isArray(data.providers) ? data.providers as ProviderInfo[] : []);
         setConfigurationError(data.configuration_error ? String(data.configuration_error) : null);
@@ -113,6 +121,7 @@ export default function App() {
   useEffect(() => {
     if (!taskId || !executionStatus || terminalStatuses.includes(executionStatus) || executionStatus === "awaiting_approval") return;
     let cancelled = false;
+    let fallbackTimer: number | undefined;
     const poll = async () => {
       try {
         const response = await fetch(API_BASE + "/api/tasks/" + taskId);
@@ -123,9 +132,29 @@ export default function App() {
         // Keep the last known task snapshot visible while the API is temporarily unavailable.
       }
     };
-    void poll();
-    const timer = window.setInterval(poll, 2500);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    const startPollingFallback = () => {
+      if (fallbackTimer !== undefined || cancelled) return;
+      void poll();
+      fallbackTimer = window.setInterval(poll, 2500);
+    };
+    if (typeof window.EventSource === "function") {
+      const stream = new EventSource(API_BASE + "/api/tasks/" + taskId + "/stream");
+      stream.addEventListener("task_update", () => { void poll(); });
+      stream.onerror = () => {
+        stream.close();
+        startPollingFallback();
+      };
+      return () => {
+        cancelled = true;
+        stream.close();
+        if (fallbackTimer !== undefined) window.clearInterval(fallbackTimer);
+      };
+    }
+    startPollingFallback();
+    return () => {
+      cancelled = true;
+      if (fallbackTimer !== undefined) window.clearInterval(fallbackTimer);
+    };
   }, [taskId, executionStatus]);
 
   function downloadDeliverableMarkdown() {
@@ -334,11 +363,11 @@ export default function App() {
         )}
 
         {view === "settings" && (
-          <div className="settings-view"><div className="eyebrow"><Settings2 size={14} /> CONFIGURATION</div><h1>Provider <span>settings</span></h1><p className="settings-intro">Provider credentials stay on the backend. This public browser interface never receives or stores API keys.</p><div className="settings-card"><div className="settings-card-head"><div className="provider-icon"><Zap size={20} /></div><div><b>Multi-provider router</b><small>Priority routing · local request budgets · bounded failover</small></div><span className={providerConfigured ? "connected-tag" : "pending-tag"}>{providerConfigured ? "Configured" : "Not configured"}</span></div><div className="settings-detail"><div><span>Configured endpoints</span><b>{providerConfigured === null ? "Backend not reachable" : providerDetails.length ? String(providerDetails.length) + " provider(s)" : "Demo planning mode"}</b></div><div><span>Fallback model</span><b>{fallbackConfigured ? "Configured" : "Not configured"}</b></div><div><span>Credential storage</span><b>Backend environment only</b></div><div><span>Live web research</span><b>{webResearchConfigured ? "Tavily configured" : "Not configured"}</b></div></div>{configurationError && <div className="error-banner">Provider configuration issue: {configurationError}</div>}<div className="settings-help">Configure multiple endpoints using AI_PROVIDERS_JSON in your Render backend environment. Each entry needs name, protocol, base_url, api_key, and model. Supported protocols: openai_compatible, gemini_generate_content, and anthropic_messages. Optional fields include priority, max_requests_per_hour, max_output_tokens, max_output_field, fallback_model, and api_version. The legacy AI_API_KEY, AI_PROVIDER_PROTOCOL, AI_API_BASE_URL, and AI_MODEL variables are also supported. Save the variables in Render, wait for redeployment, then refresh and create a fresh mission. Never paste API keys into chat or commit them to GitHub.</div><div className="provider-test-toolbar"><div><b>Test your configured endpoints</b><small>Each click sends one short test prompt per provider and consumes that provider's request quota.</small></div><button className="secondary-button" onClick={testProviderConnections} disabled={testingProviders || providerDetails.length === 0}>{testingProviders ? <LoaderCircle className="spin" size={15} /> : <Zap size={15} />} {testingProviders ? "Testing..." : "Test connections"}</button></div>{providerTestError && <div className="error-banner">{providerTestError}</div>}{providerTestedAt && <div className="test-timestamp">Last tested: {timestamp(providerTestedAt)}</div>}{providerDetails.length > 0 && <div className="provider-list">{providerDetails.map((provider) => { const result = providerTests.find((item) => item.name === provider.name); return <div className="provider-row" key={provider.name}><div><b>{provider.name}</b><small>{provider.model} · {provider.protocol.replaceAll("_", " ")}</small></div><span>{result ? (result.status.toUpperCase() + (result.latency_ms === null ? "" : " · " + result.latency_ms + " ms")) : provider.max_requests_per_hour ? provider.requests_this_hour + " / " + provider.max_requests_per_hour + " calls this hour" : "Provider-managed quota"}</span><i className={result ? "provider-test-" + result.status : provider.cooling_down ? "cooldown-indicator" : "ready-indicator"} /></div>; })}</div>}</div><div className="settings-card settings-security"><div className="settings-card-head"><div className="provider-icon"><ShieldCheck size={20} /></div><div><b>Execution and privacy boundaries</b><small>V2 preview guardrails</small></div></div><ul><li>Human approval is required before specialist execution.</li><li>API keys are read only by the backend.</li><li>Only up to eight specialists run in parallel in this preview.</li><li>QA can reject the draft and request one bounded revision pass.</li><li>Tasks are held in process memory and may be lost after a backend restart.</li><li>Agents do not yet have website, filesystem, or terminal tools.</li></ul></div></div>
+          <div className="settings-view"><div className="eyebrow"><Settings2 size={14} /> CONFIGURATION</div><h1>Provider <span>settings</span></h1><p className="settings-intro">Provider credentials stay on the backend. This public browser interface never receives or stores API keys.</p><div className="settings-card"><div className="settings-card-head"><div className="provider-icon"><Zap size={20} /></div><div><b>Multi-provider router</b><small>Priority routing · local request budgets · bounded failover</small></div><span className={providerConfigured ? "connected-tag" : "pending-tag"}>{providerConfigured ? "Configured" : "Not configured"}</span></div><div className="settings-detail"><div><span>Configured endpoints</span><b>{providerConfigured === null ? "Backend not reachable" : providerDetails.length ? String(providerDetails.length) + " provider(s)" : "Demo planning mode"}</b></div><div><span>Fallback model</span><b>{fallbackConfigured ? "Configured" : "Not configured"}</b></div><div><span>Credential storage</span><b>Backend environment only</b></div><div><span>Live web research</span><b>{webResearchConfigured ? "Tavily configured" : "Not configured"}</b></div></div>{configurationError && <div className="error-banner">Provider configuration issue: {configurationError}</div>}<div className="settings-help">Configure multiple endpoints using AI_PROVIDERS_JSON in your Render backend environment. Each entry needs name, protocol, base_url, api_key, and model. Supported protocols: openai_compatible, gemini_generate_content, and anthropic_messages. Optional fields include priority, max_requests_per_hour, max_output_tokens, max_output_field, fallback_model, and api_version. The legacy AI_API_KEY, AI_PROVIDER_PROTOCOL, AI_API_BASE_URL, and AI_MODEL variables are also supported. Save the variables in Render, wait for redeployment, then refresh and create a fresh mission. Never paste API keys into chat or commit them to GitHub.</div><div className="provider-test-toolbar"><div><b>Test your configured endpoints</b><small>Each click sends one short test prompt per provider and consumes that provider's request quota.</small></div><button className="secondary-button" onClick={testProviderConnections} disabled={testingProviders || providerDetails.length === 0}>{testingProviders ? <LoaderCircle className="spin" size={15} /> : <Zap size={15} />} {testingProviders ? "Testing..." : "Test connections"}</button></div>{providerTestError && <div className="error-banner">{providerTestError}</div>}{providerTestedAt && <div className="test-timestamp">Last tested: {timestamp(providerTestedAt)}</div>}{providerDetails.length > 0 && <div className="provider-list">{providerDetails.map((provider) => { const result = providerTests.find((item) => item.name === provider.name); return <div className="provider-row" key={provider.name}><div><b>{provider.name}</b><small>{provider.model} · {provider.protocol.replaceAll("_", " ")}</small></div><span>{result ? (result.status.toUpperCase() + (result.latency_ms === null ? "" : " · " + result.latency_ms + " ms")) : provider.max_requests_per_hour ? provider.requests_this_hour + " / " + provider.max_requests_per_hour + " calls this hour" : "Provider-managed quota"}</span><i className={result ? "provider-test-" + result.status : provider.cooling_down ? "cooldown-indicator" : "ready-indicator"} /></div>; })}</div>}</div><div className="settings-card settings-security"><div className="settings-card-head"><div className="provider-icon"><ShieldCheck size={20} /></div><div><b>Task storage · V3</b><small>Durable history · API restart recovery</small></div><span className={durableStorageConfigured ? "connected-tag" : "pending-tag"}>{durableStorageConfigured ? "Persistent" : "Memory mode"}</span></div><div className="settings-detail"><div><span>Storage backend</span><b>{storageBackend === "supabase_postgresql" ? "SUPABASE POSTGRES" : storageBackend.toUpperCase()}</b></div><div><span>Restart persistence</span><b>{durableStorageConfigured ? "Enabled" : "Not configured"}</b></div><div><span>Queue backend</span><b>{taskQueueBackend === "redis_streams" ? "REDIS STREAMS" : "IN-PROCESS PREVIEW"}</b></div><div><span>Durable queue</span><b>{durableQueueConfigured ? "Enabled" : "Not configured"}</b></div><div><span>Configuration</span><b>DATABASE_URL + REDIS_URL</b></div></div><div className="settings-help">Set DATABASE_URL in the Render backend Environment using the Supabase Transaction Pooler URI (port 6543), and REDIS_URL using your Upstash Redis TLS URL. Task snapshots are stored in a private schema with row-level security; approved jobs enter a durable Redis Stream. Both variables must be configured to enable queue mode. Without them, the app uses the in-process preview runner.</div><div className="settings-card-head"><div className="provider-icon"><ShieldCheck size={20} /></div><div><b>Execution and privacy boundaries</b><small>V3 preview guardrails</small></div></div><ul><li>Human approval is required before specialist execution.</li><li>API keys are read only by the backend.</li><li>Only up to eight specialists run in parallel in this preview.</li><li>QA can reject the draft and request one bounded revision pass.</li><li>Task history persists when Supabase DATABASE_URL is configured; otherwise demo mode uses process memory.</li><li>With Supabase and Redis configured, interrupted approved jobs are reclaimed from the durable queue after the configured idle lease; otherwise interrupted jobs are marked failed.</li><li>Agents do not yet have website, filesystem, or terminal tools.</li></ul></div></div>
         )}
       </section>
 
-      <footer className="app-footer"><span>WORKFORCE ENGINE <b>V2 AGENT EXECUTION</b></span><span><CheckCircle2 size={13} /> {plan ? statusLabel(plan.execution_status) : "Ready for a mission"} <i /> {statusLabelText}</span></footer>
+      <footer className="app-footer"><span>WORKFORCE ENGINE <b>V3 AUTONOMOUS EXECUTION</b></span><span><CheckCircle2 size={13} /> {plan ? statusLabel(plan.execution_status) : "Ready for a mission"} <i /> {statusLabelText}</span></footer>
     </main>
   );
 }

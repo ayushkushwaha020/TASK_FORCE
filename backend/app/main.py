@@ -1,24 +1,91 @@
+import asyncio
+import json
 import os
 import time
+from contextlib import asynccontextmanager
 from collections import defaultdict, deque
 
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from .execution import execute_task
 from .orchestrator import create_plan
 from .providers import provider_is_configured, provider_status, test_provider_connections
 from .schemas import ApprovalRequest, PlanRequest, PlanResponse
 from .state import TASKS
+from .task_events import RedisTaskEventBus, TaskEventHub
+from .worker_queue import TASK_QUEUE
 from .web_research import web_research_is_configured
 
-load_dotenv()
+SSE_RECONCILE_SECONDS = 15
+TASK_EVENT_HUB = TaskEventHub()
+TASK_EVENT_BUS = (
+    RedisTaskEventBus(TASK_QUEUE.redis, TASK_EVENT_HUB)
+    if TASK_QUEUE is not None
+    else None
+)
+TASKS.set_event_notifier(
+    TASK_EVENT_BUS.notify if TASK_EVENT_BUS is not None else TASK_EVENT_HUB.notify
+)
+
+
+def task_event_status() -> dict:
+    if TASK_EVENT_BUS is not None:
+        return TASK_EVENT_BUS.status()
+    return {"transport": "process_local", "subscriber_connected": False}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # A durable queue is enabled only when both DATABASE_URL and REDIS_URL
+    # are configured. TaskStore validates that dependency before the app serves.
+    if TASK_QUEUE is not None:
+        await TASK_QUEUE.initialize()
+    await TASKS.initialize(
+        active_lease_checker=TASK_QUEUE.has_active_lease if TASK_QUEUE is not None else None
+    )
+    subscriber_task = None
+    if TASK_EVENT_BUS is not None:
+        # Pub/Sub is an optimization only. Its subscriber reconnects in the
+        # background and must never be a prerequisite for serving the API.
+        subscriber_task = asyncio.create_task(
+            TASK_EVENT_BUS.run(), name="workforce-task-event-subscriber"
+        )
+    worker_task = None
+    if TASK_QUEUE is not None:
+        worker_task = asyncio.create_task(TASK_QUEUE.run(), name="workforce-redis-stream-worker")
+    try:
+        yield
+    finally:
+        if worker_task is not None:
+            worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
+        if subscriber_task is not None:
+            subscriber_task.cancel()
+            try:
+                await subscriber_task
+            except asyncio.CancelledError:
+                pass
+        if TASK_EVENT_BUS is not None:
+            await TASK_EVENT_BUS.close()
+        if TASK_QUEUE is not None:
+            await TASK_QUEUE.close()
+        await TASKS.close()
+
 
 app = FastAPI(
     title="Autonomous AI Workforce API",
-    version="0.2.0",
-    description="Approval-gated multi-agent task planning and execution preview.",
+    version="0.4.0",
+    description="Approval-gated multi-agent planning and execution with durable task history and optional Redis Streams queue.",
+    lifespan=lifespan,
 )
 
 origins = [
@@ -57,13 +124,25 @@ async def root():
         "status": "ok",
         "health": "/health",
         "docs": "/docs",
-        "version": "0.2.0",
+        "version": "0.4.0",
+        "storage_backend": TASKS.storage_backend,
+        "durable_storage_configured": TASKS.durable_storage_configured,
+        "task_queue_backend": "redis_streams" if TASK_QUEUE is not None else "background_tasks_preview",
+        "durable_queue_configured": TASK_QUEUE is not None,
+        "task_event_transport": task_event_status(),
     }
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "autonomous-ai-workforce-api", "version": "0.2.0"}
+    return {
+        "status": "ok", "service": "autonomous-ai-workforce-api", "version": "0.4.0",
+        "storage_backend": TASKS.storage_backend,
+        "durable_storage_configured": TASKS.durable_storage_configured,
+        "task_queue_backend": "redis_streams" if TASK_QUEUE is not None else "background_tasks_preview",
+        "durable_queue_configured": TASK_QUEUE is not None,
+        "task_event_transport": task_event_status(),
+    }
 
 
 @app.get("/api/config/status")
@@ -71,6 +150,18 @@ async def config_status():
     status = provider_status()
     status["web_research_configured"] = web_research_is_configured()
     status["web_research_provider"] = "tavily" if web_research_is_configured() else None
+    status["storage_backend"] = TASKS.storage_backend
+    status["durable_storage_configured"] = TASKS.durable_storage_configured
+    status["task_queue_backend"] = "redis_streams" if TASK_QUEUE is not None else "background_tasks_preview"
+    status["durable_queue_configured"] = TASK_QUEUE is not None
+    if TASK_QUEUE is not None:
+        try:
+            status["task_queue"] = await TASK_QUEUE.status()
+        except Exception as exc:
+            status["task_queue"] = {"backend": "redis_streams", "configured": True, "status": "unavailable", "error": type(exc).__name__}
+    else:
+        status["task_queue"] = {"backend": "background_tasks_preview", "configured": False}
+    status["task_event_transport"] = task_event_status()
     return status
 
 
@@ -93,8 +184,102 @@ async def plan_task(request: PlanRequest, http_request: Request):
 async def get_task(task_id: str):
     task = await TASKS.get(task_id)
     if task is None:
-        raise HTTPException(status_code=404, detail="Task not found. Tasks are held in preview memory and may be cleared after a service restart.")
+        raise HTTPException(status_code=404, detail="Task not found. Check the task ID; tasks created before durable storage was configured are not backfilled.")
     return task
+
+
+async def _task_event_generator(task_id: str, http_request: Request):
+    """Wait for local/Redis hints, reread canonical state, and reconcile every 15s."""
+    listener = TASK_EVENT_HUB.subscribe(task_id)
+    try:
+        # Subscribe before reading to close the read/subscribe race.
+        task = await TASKS.get(task_id)
+        if task is None:
+            yield "event: task_error\ndata: {\"detail\":\"Task not found.\"}\n\n"
+            return
+
+        last_event_id = http_request.headers.get("last-event-id") or http_request.query_params.get("after") or ""
+        last_index = len(task.events)
+        if last_event_id:
+            positions = [index for index, item in enumerate(task.events) if item.id == last_event_id]
+            last_index = positions[-1] + 1 if positions else max(0, len(task.events) - 10)
+        last_updated = task.updated_at
+        last_heartbeat = time.monotonic()
+        initial_hint = None
+        if not listener.empty():
+            initial_hint = listener.get_nowait()
+            # A write may have committed between subscription and this first
+            # snapshot. Use its event cursor to include the just-committed event.
+            if not last_event_id and initial_hint.event_cursor:
+                positions = [
+                    index for index, item in enumerate(task.events)
+                    if item.id == initial_hint.event_cursor
+                ]
+                if positions:
+                    last_index = min(last_index, positions[-1])
+        force_update = initial_hint is not None
+        first_pass = True
+
+        while True:
+            if await http_request.is_disconnected():
+                break
+            if not first_pass:
+                # Every wake-up (or timeout) rereads the canonical task snapshot.
+                task = await TASKS.get(task_id)
+                if task is None:
+                    yield "event: task_error\ndata: {\"detail\":\"Task no longer exists.\"}\n\n"
+                    break
+
+            new_events = task.events[last_index:]
+            for item in new_events:
+                payload = item.model_dump(mode="json")
+                yield f"id: {item.id}\nevent: task_event\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            last_index = len(task.events)
+
+            changed = force_update or bool(new_events) or task.updated_at != last_updated
+            if changed:
+                update_payload = {
+                    "task_id": task.task_id,
+                    "updated_at": task.updated_at,
+                    "execution_status": task.execution_status,
+                    "approval_status": task.approval_status,
+                    "qa_status": task.qa_status,
+                    "event_count": len(task.events),
+                }
+                yield f"event: task_update\ndata: {json.dumps(update_payload, ensure_ascii=False)}\n\n"
+                last_updated = task.updated_at
+            force_update = False
+
+            if task.execution_status in {"completed", "revision_required", "failed", "rejected", "cancelled"}:
+                break
+
+            try:
+                await asyncio.wait_for(listener.get(), timeout=SSE_RECONCILE_SECONDS)
+            except asyncio.TimeoutError:
+                # Periodic canonical reread recovers a lost Pub/Sub notification.
+                pass
+            if time.monotonic() - last_heartbeat >= 15:
+                yield ": workforce stream alive\n\n"
+                last_heartbeat = time.monotonic()
+            first_pass = False
+    finally:
+        TASK_EVENT_HUB.unsubscribe(task_id, listener)
+
+
+@app.get("/api/tasks/{task_id}/stream")
+async def stream_task_events(task_id: str, http_request: Request):
+    task = await TASKS.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    return StreamingResponse(
+        _task_event_generator(task_id, http_request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/tasks/{task_id}/approval", response_model=PlanResponse)
@@ -116,7 +301,16 @@ async def decide_task_approval(task_id: str, decision: ApprovalRequest, backgrou
         )
     updated = await TASKS.update(task_id, execution_status="queued", approval_status="approved")
     await TASKS.add_event(task_id, "Human", "plan_approved", "The user approved the team plan and authorised internal AI execution.")
-    background_tasks.add_task(execute_task, task_id)
+    if TASK_QUEUE is not None:
+        try:
+            message_id = await TASK_QUEUE.enqueue(task_id)
+            await TASKS.add_event(task_id, "Workforce Queue", "queue_job_enqueued", f"Approved task was committed to the durable Redis queue (message {message_id}).")
+        except Exception as exc:
+            await TASKS.update(task_id, execution_status="failed", qa_status="rejected")
+            await TASKS.add_event(task_id, "Workforce Queue", "queue_enqueue_failed", f"Durable queue submission failed ({type(exc).__name__}); no execution was started.")
+            raise HTTPException(status_code=503, detail="The durable task queue is unavailable. The task was not started; check the queue configuration and retry with a new plan.") from exc
+    else:
+        background_tasks.add_task(execute_task, task_id)
     result = await TASKS.get(task_id)
     return result or updated
 
