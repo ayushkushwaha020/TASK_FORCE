@@ -192,3 +192,4 @@ button{cursor:pointer}
 .diagnostic-retry-row .send-button{flex:none;padding:9px 12px;font-size:9px}
 .team-stage-heading>span{font:9px 'DM Mono';color:#8e9fbe;text-align:right}
 @media(max-width:700px){.diagnostic-retry-row{align-items:stretch;flex-direction:column}.diagnostic-retry-row .send-button{width:100%;justify-content:center}.team-stage-heading{align-items:flex-start;flex-direction:column}.team-stage-heading>span{text-align:left}}
+.agent-status.status-blocked_by_provider,.planned-tag.status-blocked_by_provider{color:#e7c487;background:#352b1d;border:1px solid #66502c}
