@@ -1,4 +1,6 @@
+import asyncio
 import json
+import os
 import time
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -19,6 +21,14 @@ class ProviderRouterTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         providers._provider_usage.clear()
         providers._provider_cooldowns.clear()
+        providers._provider_next_request_at.clear()
+        providers._provider_locks.clear()
+        self.pacing_env = patch.dict(os.environ, {
+            "AI_PROVIDER_MIN_INTERVAL_SECONDS": "0",
+            "AI_PROVIDER_MAX_REQUESTS_PER_MINUTE": "120",
+        })
+        self.pacing_env.start()
+        self.addCleanup(self.pacing_env.stop)
 
     async def test_registry_orders_providers_and_status_never_exposes_keys(self):
         with patch.dict("os.environ", {"AI_PROVIDERS_JSON": provider_config(), "AI_API_KEY": "", "AI_MODEL": ""}):
@@ -56,6 +66,68 @@ class ProviderRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ["primary", "secondary"])
         self.assertGreater(providers._provider_cooldowns["primary"], time.monotonic())
 
+
+    async def test_429_retry_after_header_is_respected(self):
+        request = httpx.Request("POST", "https://provider.example/v1/chat/completions")
+        response = httpx.Response(429, headers={"Retry-After": "37"}, request=request)
+        self.assertEqual(providers._cooldown_seconds_from_response(response), 37)
+
+    async def test_gemini_daily_quota_message_gets_longer_cooldown(self):
+        request = httpx.Request("POST", "https://provider.example/generateContent")
+        response = httpx.Response(
+            429,
+            json={"error": {"message": "Quota exceeded: requests per day limit has been reached."}},
+            request=request,
+        )
+        with patch.dict(os.environ, {"AI_PROVIDER_DAILY_QUOTA_COOLDOWN_SECONDS": "1800"}):
+            self.assertEqual(providers._cooldown_seconds_from_response(response), 1800)
+
+    async def test_single_provider_calls_are_serialized(self):
+        provider = {
+            "name": "single", "protocol": "openai_compatible", "base_url": "https://single.example/v1",
+            "api_key": "secret", "model": "model", "max_requests_per_hour": None,
+            "max_requests_per_minute": 120, "min_request_interval_seconds": 0,
+        }
+        active = 0
+        peak = 0
+        async def fake_call(*args, **kwargs):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return "ok"
+        with patch("app.providers._provider_registry", return_value=[provider]), patch(
+            "app.providers._call_model", new=AsyncMock(side_effect=fake_call)
+        ):
+            results = await asyncio.gather(*[
+                providers.request_completion([{"role": "user", "content": str(i)}]) for i in range(4)
+            ])
+        self.assertEqual(results, ["ok"] * 4)
+        self.assertEqual(peak, 1)
+
+    async def test_cooled_primary_is_skipped_and_secondary_is_used(self):
+        calls = []
+        async def fake_call(provider, messages, *, temperature, json_mode, model):
+            calls.append(provider["name"])
+            return "secondary response"
+        with patch.dict("os.environ", {"AI_PROVIDERS_JSON": provider_config(), "AI_API_KEY": "", "AI_MODEL": ""}), \
+             patch("app.providers._provider_cooldowns", {"primary": time.monotonic() + 90}), \
+             patch("app.providers._call_model", new=AsyncMock(side_effect=fake_call)):
+            result = await providers.request_completion([{"role": "user", "content": "hello"}])
+        self.assertEqual(result, "secondary response")
+        self.assertEqual(calls, ["secondary"])
+
+    async def test_provider_status_reports_non_secret_pacing_and_cooldown(self):
+        with patch.dict("os.environ", {"AI_PROVIDERS_JSON": provider_config(), "AI_API_KEY": "", "AI_MODEL": "", "AI_PROVIDER_MAX_REQUESTS_PER_MINUTE": "4"}):
+            providers._provider_cooldowns["primary"] = time.monotonic() + 25
+            status = providers.provider_status()
+        primary = next(item for item in status["providers"] if item["name"] == "primary")
+        self.assertTrue(primary["cooling_down"])
+        self.assertGreaterEqual(primary["cooldown_seconds"], 1)
+        self.assertEqual(primary["max_requests_per_minute"], 4)
+        self.assertEqual(status["available_provider_count"], 1)
+        self.assertTrue(status["fallback_configured"])
 
     async def test_retry_attempts_consume_the_same_provider_budget(self):
         calls = []
