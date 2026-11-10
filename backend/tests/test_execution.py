@@ -1,7 +1,7 @@
 import json
 import unittest
 import uuid
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.execution import execute_task
 from app.schemas import AgentPlan, PlanResponse, SubtaskPlan
@@ -158,6 +158,54 @@ class ExecutionPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("AIza123456789012345678901234567890", detail)
         self.assertIn("Authorization=[redacted]", detail)
         self.assertIn("api_key=[redacted]", detail)
+
+    async def test_retry_reuses_completed_specialist_checkpoint_and_runs_only_failed_role(self):
+        plan = self.make_plan()
+        await TASKS.create(plan)
+        await TASKS.update(plan.task_id, execution_status="queued", approval_status="approved")
+        await TASKS.update_agent(plan.task_id, "director", status="completed")
+        await TASKS.add_memory(plan.task_id, "Project Director", "Project Manager findings", "Previously completed project coordination findings.")
+        await TASKS.update_agent(plan.task_id, "ops", status="planned")
+
+        calls = []
+        async def fake_completion(messages, *, temperature=0.2, json_mode=False):
+            system = messages[0]["content"]
+            calls.append(system)
+            if "independent QA authority" in system:
+                return json.dumps({"decision": "approve", "summary": "All remaining requirements are covered.", "issues": [], "revision_instructions": "", "affected_agents": []})
+            if "facilitating a transparent" in system:
+                return "The completed director checkpoint and operations contribution are consistent."
+            if "principal editor" in system:
+                return "# Resumed Event Plan\n\nThe integrated deliverable includes the saved director checkpoint and new operations work."
+            return "New operations workstream output."
+
+        with patch("app.execution.provider_is_configured", return_value=True), \
+             patch("app.execution.provider_availability", return_value={"available_provider_count": 1}), \
+             patch("app.execution.request_completion", side_effect=fake_completion):
+            await execute_task(plan.task_id)
+
+        result = await TASKS.get(plan.task_id)
+        assert result is not None
+        self.assertEqual(result.execution_status, "completed")
+        self.assertEqual(result.qa_status, "passed")
+        self.assertFalse(any("You are Project Director" in system for system in calls))
+        self.assertTrue(any("You are Operations Planner" in system for system in calls))
+        self.assertTrue(any("Previously completed project coordination findings" in item.content for item in result.shared_memory))
+
+    async def test_recovery_is_deferred_when_all_providers_are_unavailable(self):
+        from app.execution import _recover_failed_workers
+        plan = self.make_plan()
+        await TASKS.create(plan)
+        results = [
+            {"agent": plan.agents[0].model_dump(), "output": "Director output", "error": None},
+            {"agent": plan.agents[1].model_dump(), "output": "", "error": "provider rate limit response"},
+        ]
+        with patch("app.execution.provider_availability", return_value={"available_provider_count": 0, "retry_after_seconds": 60}), \
+             patch("app.execution.request_completion", new=AsyncMock()) as completion:
+            updated = await _recover_failed_workers(plan.task_id, plan, results)
+        completion.assert_not_awaited()
+        self.assertTrue(any(event.kind == "recovery_deferred" for event in (await TASKS.get(plan.task_id)).events))
+        self.assertEqual(updated[1]["error"], "provider rate limit response")
 
     async def test_subtasks_are_not_completed_by_result_position_or_ambiguous_owner(self):
         from app.execution import _record_specialist_subtasks
