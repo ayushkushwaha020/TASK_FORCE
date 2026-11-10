@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 
 from .execution import execute_task
 from .orchestrator import create_plan
-from .providers import provider_is_configured, provider_status, test_provider_connections
+from .providers import provider_availability, provider_is_configured, provider_status, test_provider_connections
 from .schemas import ApprovalRequest, PlanRequest, PlanResponse
 from .state import TASKS
 from .task_events import RedisTaskEventBus, TaskEventHub
@@ -282,6 +282,55 @@ async def stream_task_events(task_id: str, http_request: Request):
     )
 
 
+@app.post("/api/tasks/{task_id}/retry", response_model=PlanResponse)
+async def retry_task(task_id: str, background_tasks: BackgroundTasks, http_request: Request):
+    """Resume a failed approved task while preserving completed specialist checkpoints."""
+    enforce_rate_limit(http_request, "failed task retries", 8)
+    task = await TASKS.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if task.execution_status != "failed" or task.approval_status != "approved":
+        raise HTTPException(status_code=409, detail="Only a previously approved task that stopped on execution failure can be retried.")
+    if task.qa_status in {"passed", "rejected"}:
+        raise HTTPException(status_code=409, detail="This task already has a final QA decision. Create a new mission or use the QA revision workflow.")
+
+    availability = provider_availability()
+    if not availability.get("configured"):
+        raise HTTPException(status_code=503, detail="No live AI provider is configured. Add a provider in the backend environment before retrying.")
+    if availability.get("available_provider_count", 0) <= 0:
+        retry_after = availability.get("retry_after_seconds")
+        wait_note = f" Try again in about {retry_after} seconds." if retry_after else " Wait until the provider request budget resets."
+        fallback_note = " Configure a second provider in AI_PROVIDERS_JSON for automatic failover." if not availability.get("fallback_configured") else ""
+        raise HTTPException(status_code=503, detail="All configured providers are currently cooling down or at their local request budget." + wait_note + fallback_note)
+
+    for agent in task.agents:
+        if "qa" in agent.role.casefold() or "verif" in agent.role.casefold():
+            await TASKS.update_agent(task_id, agent.id, status="waiting_for_review")
+        elif agent.status == "failed":
+            await TASKS.update_agent(task_id, agent.id, status="planned")
+    for subtask in task.subtasks:
+        if subtask.status in {"failed", "in_progress"}:
+            await TASKS.update_subtask(task_id, subtask.id, status="planned", output=None)
+
+    await TASKS.update(task_id, execution_status="queued", qa_status="pending_execution", qa_feedback=None)
+    await TASKS.add_event(
+        task_id, "Human", "execution_retry_requested",
+        "The user requested a retry. Completed specialist outputs remain saved; only unfinished or failed workstreams will be called again.",
+    )
+    if TASK_QUEUE is not None:
+        try:
+            message_id = await TASK_QUEUE.enqueue(task_id)
+            await TASKS.add_event(task_id, "Workforce Queue", "queue_job_enqueued", f"Retry was committed to the durable Redis queue (message {message_id}).")
+        except Exception as exc:
+            await TASKS.update(task_id, execution_status="failed", qa_status="pending_execution")
+            await TASKS.add_event(task_id, "Workforce Queue", "queue_enqueue_failed", f"Retry queue submission failed ({type(exc).__name__}); saved specialist outputs remain intact.")
+            raise HTTPException(status_code=503, detail="The durable task queue is unavailable. Completed specialist outputs have been preserved; try again after the queue recovers.") from exc
+    else:
+        background_tasks.add_task(execute_task, task_id)
+    result = await TASKS.get(task_id)
+    return result or task
+
+
 @app.post("/api/tasks/{task_id}/approval", response_model=PlanResponse)
 async def decide_task_approval(task_id: str, decision: ApprovalRequest, background_tasks: BackgroundTasks, http_request: Request):
     task = await TASKS.get(task_id)
@@ -306,7 +355,7 @@ async def decide_task_approval(task_id: str, decision: ApprovalRequest, backgrou
             message_id = await TASK_QUEUE.enqueue(task_id)
             await TASKS.add_event(task_id, "Workforce Queue", "queue_job_enqueued", f"Approved task was committed to the durable Redis queue (message {message_id}).")
         except Exception as exc:
-            await TASKS.update(task_id, execution_status="failed", qa_status="rejected")
+            await TASKS.update(task_id, execution_status="failed", qa_status="pending_execution")
             await TASKS.add_event(task_id, "Workforce Queue", "queue_enqueue_failed", f"Durable queue submission failed ({type(exc).__name__}); no execution was started.")
             raise HTTPException(status_code=503, detail="The durable task queue is unavailable. The task was not started; check the queue configuration and retry with a new plan.") from exc
     else:
